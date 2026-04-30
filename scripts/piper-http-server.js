@@ -19,7 +19,6 @@ const PIPER_BINARY = process.env.PIPER_BINARY || 'python3';
 const ATC_MODEL = process.env.PIPER_MODEL_ATC || process.env.PIPER_MODEL || '';
 const TRAFFIC_MODEL = process.env.PIPER_MODEL_TRAFFIC || process.env.PIPER_MODEL || ATC_MODEL;
 
-// On Render this should stay false, but it is harmless if false.
 const MAC_SAY_FALLBACK =
   String(process.env.PIPER_MAC_SAY_FALLBACK || 'false').toLowerCase() !== 'false';
 
@@ -62,7 +61,10 @@ const server = http.createServer(async (req, res) => {
       const body = await readJson(req);
 
       const text = sanitizeText(body.text || 'SkyEcho Piper test.');
-      const role = body.role === 'traffic' || body.voice === 'traffic' ? 'traffic' : 'atc';
+      const role =
+        body.role === 'traffic' || body.voice === 'traffic'
+          ? 'traffic'
+          : 'atc';
 
       const wav = await synthesizeToWav(text, role);
 
@@ -131,7 +133,11 @@ function runPiper(text, model, outputFile) {
     let command;
     let args;
 
-    if (PIPER_BINARY === 'python3' || PIPER_BINARY === 'python' || PIPER_BINARY.includes('python')) {
+    if (
+      PIPER_BINARY === 'python3' ||
+      PIPER_BINARY === 'python' ||
+      PIPER_BINARY.includes('python')
+    ) {
       command = PIPER_BINARY;
       args = ['-m', 'piper', '--model', model, '--output_file', outputFile];
     } else {
@@ -186,7 +192,16 @@ async function runMacSay(text, outputFile, role) {
     // Use system ffmpeg.
   }
 
-  await execFileAsync(ffmpeg, ['-y', '-i', tmpAiff, '-ar', '48000', '-ac', '2', outputFile]);
+  await execFileAsync(ffmpeg, [
+    '-y',
+    '-i',
+    tmpAiff,
+    '-ar',
+    '48000',
+    '-ac',
+    '2',
+    outputFile
+  ]);
 }
 
 function sanitizeText(text) {
