@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: skyecho-atc-discord-bot
+    env: node
+    plan: starter
+    buildCommand: npm install && python3 -m pip install --user vosk piper-tts
+    startCommand: npm run render:start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: PORT
+        value: 8787
+      - key: TTS_MODE
+        value: piper-http
+      - key: PIPER_TTS_URL
+        value: http://127.0.0.1:5000/api/tts
+      - key: PIPER_HTTP_HOST
+        value: 127.0.0.1
+      - key: PIPER_HTTP_PORT
+        value: 5000
+      - key: PIPER_BINARY
+        value: ./piper-bin/piper
+      - key: STT_MODE
+        value: vosk-local
+      - key: PYTHON_BIN
+        value: python3
+      - key: FFMPEG_BINARY
+        value: ffmpeg
