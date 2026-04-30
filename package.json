@@ -11,6 +11,7 @@
     "check": "node scripts/self-check.js",
     "piper": "node scripts/piper-http-server.js",
     "start:piper": "node scripts/piper-http-server.js",
+    "render:start": "node scripts/render-start.js",
     "install:vosk": "python3 -m pip install vosk",
     "download:vosk-model": "bash scripts/download-vosk-model.sh"
   },
