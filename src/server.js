@@ -1,106 +1,185 @@
 import 'dotenv/config';
 import express from 'express';
-import { spawn } from 'child_process';
-import fs from 'fs/promises';
-import { randomUUID } from 'crypto';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+import { WebSocketServer } from 'ws';
 
+import { createSession, getSession, listSessions, deleteSession } from './atc/sessionStore.js';
+import { handlePilotText } from './atc/atcEngine.js';
+import { seedTraffic, nextTrafficTransmission } from './traffic/syntheticTraffic.js';
+import { synthesizeSpeech } from './tts/ttsEngine.js';
+import { startDiscordBot, speakToGuild } from './bot/discordBot.js';
+import { log } from './utils/logger.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
+const port = Number(process.env.PORT || 8787);
+
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(morgan('dev'));
 app.use(express.json({ limit: '2mb' }));
 
-function runPiper(text, model) {
-  return new Promise((resolve, reject) => {
-    const out = `/tmp/piper-${randomUUID()}.wav`;
+const publicDir = path.resolve('public');
+const indexPath = path.join(publicDir, 'index.html');
 
-    const bin = process.env.PIPER_BINARY || 'python3';
-
-    const args = bin.includes('python')
-      ? ['-m', 'piper', '--model', model, '--output_file', out]
-      : ['--model', model, '--output_file', out];
-
-    const p = spawn(bin, args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: process.env
-    });
-
-    let err = '';
-
-    p.stderr.on('data', d => {
-      err += d.toString();
-    });
-
-    p.on('close', async code => {
-      if (code !== 0) {
-        return reject(new Error(err || `piper exited ${code}`));
-      }
-
-      try {
-        const audio = await fs.readFile(out);
-        resolve(audio);
-      } catch (readErr) {
-        reject(readErr);
-      }
-    });
-
-    p.stdin.write(text || 'SkyEcho radio check.');
-    p.stdin.end();
-  });
+if (fs.existsSync(publicDir)) {
+  app.use(express.static(publicDir));
 }
 
-async function handleTts(req, res) {
-  try {
-    const { text, voice, role } = req.body || {};
-    const selectedRole = voice || role || 'atc';
-
-    const model =
-      selectedRole === 'traffic'
-        ? process.env.PIPER_MODEL_TRAFFIC || process.env.PIPER_MODEL
-        : process.env.PIPER_MODEL_ATC || process.env.PIPER_MODEL;
-
-    if (!model) {
-      throw new Error('No PIPER_MODEL_ATC/PIPER_MODEL configured');
-    }
-
-    const audio = await runPiper(text || 'SkyEcho test.', model);
-
-    res.setHeader('Content-Type', 'audio/wav');
-    res.setHeader('Cache-Control', 'no-store');
-    res.send(audio);
-  } catch (e) {
-    console.error('[PiperHTTP]', e.message);
-    res.status(500).json({ ok: false, error: e.message });
-  }
-}
-
+/**
+ * Render/root health routes
+ */
 app.get('/', (req, res) => {
   res.json({
     ok: true,
-    service: 'SkyEcho Piper Backend',
-    routes: ['/api/tts', '/tts', '/health'],
-    voices: {
-      atc: process.env.PIPER_MODEL_ATC || process.env.PIPER_MODEL || null,
-      traffic: process.env.PIPER_MODEL_TRAFFIC || process.env.PIPER_MODEL || null
-    }
+    service: 'SkyEcho ATC Discord Bot',
+    status: 'running',
+    discord: process.env.DISCORD_TOKEN ? 'configured' : 'missing_token',
+    ttsMode: process.env.TTS_MODE || 'mock',
+    piperUrl: process.env.PIPER_TTS_URL || null,
+    sttMode: process.env.STT_MODE || 'manual'
   });
 });
 
 app.get('/health', (req, res) => {
   res.json({
     ok: true,
-    service: 'SkyEcho Piper Backend',
-    status: 'healthy'
+    service: 'SkyEcho ATC Discord Bot',
+    status: 'healthy',
+    ttsMode: process.env.TTS_MODE || 'mock',
+    piperUrl: process.env.PIPER_TTS_URL || null,
+    sttMode: process.env.STT_MODE || 'manual'
   });
 });
 
-app.post('/api/tts', handleTts);
-app.post('/tts', handleTts);
-
-const host = '0.0.0.0';
-const port = Number(process.env.PORT || process.env.PIPER_HTTP_PORT || 10000);
-
-app.listen(port, host, () => {
-  console.log(`[PiperHTTP] listening at http://${host}:${port}`);
-  console.log(`[PiperHTTP] POST /api/tts`);
-  console.log(`[PiperHTTP] POST /tts`);
-  console.log(`[PiperHTTP] ATC model: ${process.env.PIPER_MODEL_ATC || process.env.PIPER_MODEL}`);
-  console.log(`[PiperHTTP] Traffic model: ${process.env.PIPER_MODEL_TRAFFIC || process.env.PIPER_MODEL}`);
+app.get('/api/health', (req, res) => {
+  res.json({
+    ok: true,
+    service: 'SkyEcho ATC Discord Bot',
+    tts: process.env.TTS_MODE || 'mock',
+    piperUrl: process.env.PIPER_TTS_URL || null,
+    stt: process.env.STT_MODE || 'manual'
+  });
 });
+
+/**
+ * Sessions
+ */
+app.post('/api/session', (req, res) => {
+  const session = createSession(req.body || {});
+  seedTraffic(session, req.body?.trafficDensity || 'medium');
+  broadcast({ type: 'session_created', session });
+  res.json(session);
+});
+
+app.get('/api/sessions', (req, res) => {
+  res.json(listSessions());
+});
+
+app.get('/api/session/:id', (req, res) => {
+  const s = getSession(req.params.id);
+  if (!s) return res.status(404).json({ error: 'session not found' });
+  res.json(s);
+});
+
+app.delete('/api/session/:id', (req, res) => {
+  res.json({ ok: deleteSession(req.params.id) });
+});
+
+/**
+ * Pilot text → ATC response
+ */
+app.post('/api/session/:id/pilot-text', async (req, res) => {
+  try {
+    const s = getSession(req.params.id);
+    if (!s) return res.status(404).json({ error: 'session not found' });
+
+    const result = handlePilotText(s, req.body?.text || '');
+    const audio = await synthesizeSpeech({ text: result.text, role: 'atc' });
+
+    broadcast({ type: 'atc', sessionId: s.id, result, audio });
+    res.json({ result, audio });
+  } catch (err) {
+    log('Server', `pilot-text error: ${err?.message || err}`);
+    res.status(500).json({ error: err?.message || 'pilot-text failed' });
+  }
+});
+
+/**
+ * AI traffic response
+ */
+app.post('/api/session/:id/traffic', async (req, res) => {
+  try {
+    const s = getSession(req.params.id);
+    if (!s) return res.status(404).json({ error: 'session not found' });
+
+    const result = nextTrafficTransmission(s);
+    const audio = await synthesizeSpeech({ text: result.text, role: 'traffic' });
+
+    broadcast({ type: 'traffic', sessionId: s.id, result, audio });
+    res.json({ result, audio });
+  } catch (err) {
+    log('Server', `traffic error: ${err?.message || err}`);
+    res.status(500).json({ error: err?.message || 'traffic failed' });
+  }
+});
+
+/**
+ * Speak directly into Discord voice
+ */
+app.post('/api/session/:id/discord-speak', async (req, res) => {
+  try {
+    const s = getSession(req.params.id);
+    if (!s) return res.status(404).json({ error: 'session not found' });
+
+    const guildId = req.body?.guildId || s.discordGuildId || s.guildId;
+    const text = req.body?.text || s.lastAtcText;
+    const role = req.body?.role || 'atc';
+
+    const result = await speakToGuild(guildId, text, role);
+    res.json(result);
+  } catch (err) {
+    log('Server', `discord-speak error: ${err?.message || err}`);
+    res.status(500).json({ error: err?.message || 'discord-speak failed' });
+  }
+});
+
+/**
+ * Optional frontend fallback
+ */
+app.get('*', (req, res) => {
+  if (fs.existsSync(indexPath)) {
+    return res.sendFile(indexPath);
+  }
+
+  res.status(404).json({
+    ok: false,
+    error: 'No frontend index.html found',
+    service: 'SkyEcho ATC Discord Bot',
+    hint: 'Backend is running. This route has no web page.'
+  });
+});
+
+const server = app.listen(port, () => {
+  log('Server', `http://localhost:${port}`);
+});
+
+const wss = new WebSocketServer({ server });
+const sockets = new Set();
+
+wss.on('connection', ws => {
+  sockets.add(ws);
+  ws.on('close', () => sockets.delete(ws));
+});
+
+function broadcast(data) {
+  const msg = JSON.stringify(data);
+  for (const ws of sockets) {
+    if (ws.readyState === 1) ws.send(msg);
+  }
+}
+
+startDiscordBot();
