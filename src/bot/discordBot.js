@@ -9,6 +9,7 @@ import {
 
 import path from 'path';
 
+import { startDiscordTrafficLoop } from '../traffic/discordRegionalTraffic.js';
 import { createSession, getSession, updateSession } from '../atc/sessionStore.js';
 import { handlePilotText } from '../atc/atcEngine.js';
 import { nextTrafficTransmission, seedTraffic } from '../traffic/syntheticTraffic.js';
@@ -152,7 +153,14 @@ export async function startDiscordBot() {
 
         seedTraffic(session);
 
-        if (conn) conn.sessionId = session.id;
+        if (conn) {
+          conn.sessionId = session.id;
+
+          maybeStartDiscordTraffic({
+            guildId: interaction.guildId,
+            sessionId: session.id
+          });
+        }
 
         await safeReply(
           interaction,
@@ -177,7 +185,14 @@ export async function startDiscordBot() {
                 discordUserId: interaction.user.id
               });
 
-        if (p && !p.sessionId) p.sessionId = session.id;
+        if (p && !p.sessionId) {
+          p.sessionId = session.id;
+
+          maybeStartDiscordTraffic({
+            guildId: interaction.guildId,
+            sessionId: session.id
+          });
+        }
 
         const rawText = interaction.options.getString('text') || '';
         const cleanedText = normalizeAviationStt(rawText, getNormalizerContext(session));
@@ -208,7 +223,14 @@ export async function startDiscordBot() {
                 discordUserId: interaction.user.id
               });
 
-        if (p && !p.sessionId) p.sessionId = session.id;
+        if (p && !p.sessionId) {
+          p.sessionId = session.id;
+
+          maybeStartDiscordTraffic({
+            guildId: interaction.guildId,
+            sessionId: session.id
+          });
+        }
 
         const t = nextTrafficTransmission(session);
 
@@ -245,6 +267,10 @@ export async function startDiscordBot() {
             `STT_MODE: ${process.env.STT_MODE || 'manual'}`,
             `PTT method: Discord mute/unmute`,
             `STT cleanup: aviation normalizer enabled`,
+            `Auto traffic: ${process.env.DISCORD_TRAFFIC_AUTO || 'false'}`,
+            `VHF FX: ${process.env.DISCORD_VHF_FX || 'false'}`,
+            `Traffic region: ${process.env.TRAFFIC_REGION || 'auto'}`,
+            `Traffic density: ${process.env.TRAFFIC_DENSITY_DEFAULT || '2'}`,
             `OpenAI key present: ${process.env.OPENAI_API_KEY ? 'yes' : 'no'}`,
             `Vosk model: ${process.env.VOSK_MODEL_PATH || './models/vosk-model-small-en-us-0.15'}`,
             `Autojoin channels: ${process.env.SKYECHO_AUTOJOIN_CHANNEL_IDS || process.env.SKYECHO_DEFAULT_VOICE_CHANNEL_ID || 'not set'}`
@@ -268,9 +294,6 @@ export async function startDiscordBot() {
     try {
       if (newState.member?.user?.bot) return;
 
-      /**
-       * User joined or moved voice channel.
-       */
       const joinedNewChannel =
         oldState.channelId !== newState.channelId &&
         Boolean(newState.channelId);
@@ -279,9 +302,6 @@ export async function startDiscordBot() {
         await autoStartRadioBridge(newState);
       }
 
-      /**
-       * Discord mute/unmute as PTT.
-       */
       if (oldState.selfMute === newState.selfMute) return;
 
       await handleMutePtt(oldState, newState);
@@ -333,7 +353,13 @@ async function autoStartRadioBridge(newState) {
       cruise: synced.cruise || 'FL310',
       aircraft: synced.aircraft || '',
       departure: synced.departure || '',
-      arrival: synced.arrival || ''
+      arrival: synced.arrival || '',
+      trafficDensity: synced.trafficDensity || process.env.TRAFFIC_DENSITY_DEFAULT || 2,
+      controller: synced.controller || null,
+      phase: synced.phase || 'preflight',
+      telemetry: synced.telemetry || null,
+      navData: synced.navData || null,
+      weather: synced.weather || null
     });
 
     updateSession(session.id, {
@@ -342,16 +368,22 @@ async function autoStartRadioBridge(newState) {
       discordUserId: userId,
       syncedFromWeb: true,
       syncId: synced.syncId,
-      pairingCode: synced.pairingCode
+      pairingCode: synced.pairingCode,
+      trafficDensity: synced.trafficDensity || process.env.TRAFFIC_DENSITY_DEFAULT || 2
     });
 
-    seedTraffic(session, synced.trafficDensity || 'medium');
+    seedTraffic(session, synced.trafficDensity || process.env.TRAFFIC_DENSITY_DEFAULT || 2);
 
     record.sessionId = session.id;
 
+    maybeStartDiscordTraffic({
+      guildId,
+      sessionId: session.id
+    });
+
     await speakToGuild(
       guildId,
-      `SkyEcho synced. ${session.spokenCallsign || synced.spokenCallsign || synced.callsign}, clearance delivery is online.`,
+      `SkyEcho synced. ${speakCallsign(session.callsign || synced.callsign)}, clearance delivery is online.`,
       'atc'
     );
 
@@ -378,15 +410,27 @@ async function autoStartRadioBridge(newState) {
       cruise: active.cruise || 'FL310',
       aircraft: active.aircraft || '',
       departure: active.departure || '',
-      arrival: active.arrival || ''
+      arrival: active.arrival || '',
+      trafficDensity: active.trafficDensity || process.env.TRAFFIC_DENSITY_DEFAULT || 2,
+      controller: active.controller || null,
+      phase: active.phase || 'preflight',
+      telemetry: active.telemetry || null,
+      navData: active.navData || null,
+      weather: active.weather || null
     });
 
-    seedTraffic(session, active.trafficDensity || 'medium');
+    seedTraffic(session, active.trafficDensity || process.env.TRAFFIC_DENSITY_DEFAULT || 2);
+
     record.sessionId = session.id;
+
+    maybeStartDiscordTraffic({
+      guildId,
+      sessionId: session.id
+    });
 
     await speakToGuild(
       guildId,
-      `SkyEcho session resumed. ${session.spokenCallsign || active.callsign}, radio bridge connected.`,
+      `SkyEcho session resumed. ${speakCallsign(session.callsign || active.callsign)}, radio bridge connected.`,
       'atc'
     );
 
@@ -406,11 +450,19 @@ async function autoStartRadioBridge(newState) {
       discordUserId: userId,
       callsign: `SKY${String(userId).slice(-3)}`,
       route: 'TKPK SKB G633 ANU DCT TAPA',
-      cruise: 'FL310'
+      cruise: 'FL310',
+      trafficDensity: process.env.TRAFFIC_DENSITY_DEFAULT || 2,
+      phase: 'preflight'
     });
 
-    seedTraffic(session, process.env.TRAFFIC_DENSITY_DEFAULT || 'medium');
+    seedTraffic(session, process.env.TRAFFIC_DENSITY_DEFAULT || 2);
+
     record.sessionId = session.id;
+
+    maybeStartDiscordTraffic({
+      guildId,
+      sessionId: session.id
+    });
 
     await speakToGuild(
       guildId,
@@ -476,7 +528,14 @@ async function handleMutePtt(oldState, newState) {
           discordUserId: newState.id
         });
 
-  if (!record.sessionId) record.sessionId = session.id;
+  if (!record.sessionId) {
+    record.sessionId = session.id;
+
+    maybeStartDiscordTraffic({
+      guildId,
+      sessionId: session.id
+    });
+  }
 
   const cleanedText = normalizeAviationStt(
     stt.text,
@@ -494,6 +553,20 @@ async function handleMutePtt(oldState, newState) {
   const result = handlePilotText(session, cleanedText);
 
   await speakToGuild(guildId, result.text, 'atc');
+}
+
+function maybeStartDiscordTraffic({ guildId, sessionId }) {
+  if (String(process.env.DISCORD_TRAFFIC_AUTO || '').toLowerCase() !== 'true') {
+    log('DiscordTraffic', 'Auto traffic disabled. Set DISCORD_TRAFFIC_AUTO=true');
+    return;
+  }
+
+  startDiscordTrafficLoop({
+    guildId,
+    sessionId,
+    speakToGuild,
+    getSession
+  });
 }
 
 function getNormalizerContext(session) {
@@ -516,12 +589,34 @@ function getNormalizerContext(session) {
 }
 
 function speakCallsign(callsign) {
-  const raw = String(callsign || 'LIAT319')
+  const raw = String(callsign || '')
     .toUpperCase()
     .replace(/\s+/g, '');
 
-  const airline = raw.match(/^[A-Z]+/)?.[0] || 'LIAT';
-  const numbers = raw.match(/\d+/)?.[0] || '319';
+  if (!raw) return 'SkyEcho';
+
+  const airlineRaw = raw.match(/^[A-Z]+/)?.[0] || '';
+  const numbers = raw.match(/\d+/)?.[0] || '';
+
+  const airlineMap = {
+    AAL: 'American',
+    AA: 'American',
+    JBU: 'JetBlue',
+    B6: 'JetBlue',
+    DAL: 'Delta',
+    DL: 'Delta',
+    UAL: 'United',
+    UA: 'United',
+    BWA: 'Caribbean',
+    LIAT: 'LIAT',
+    IWY: 'InterCaribbean',
+    WIA: 'Winair',
+    SVG: 'SVG Air',
+    TJB: 'Tradewind',
+    SKY: 'SkyEcho'
+  };
+
+  const airline = airlineMap[airlineRaw] || airlineRaw || 'SkyEcho';
 
   const digitWords = {
     0: 'zero',
@@ -536,7 +631,11 @@ function speakCallsign(callsign) {
     9: 'niner'
   };
 
-  return `${airline} ${numbers.split('').map(d => digitWords[d] || d).join(' ')}`;
+  const spokenNumber = numbers
+    ? numbers.split('').map(d => digitWords[d] || d).join(' ')
+    : '';
+
+  return `${airline} ${spokenNumber}`.trim();
 }
 
 function joinUserVoice(interaction) {
