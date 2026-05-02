@@ -14,16 +14,42 @@ import { synthesizeSpeech } from './tts/ttsEngine.js';
 import { startDiscordBot, speakToGuild } from './bot/discordBot.js';
 import { log } from './utils/logger.js';
 
+import { saveDiscordSync, listPendingSyncs } from './discord/discordSyncStore.js';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const port = Number(process.env.PORT || 8787);
 
-app.use(helmet({ contentSecurityPolicy: false }));
-app.use(morgan('dev'));
-app.use(express.json({ limit: '2mb' }));
-
 const publicDir = path.resolve('public');
 const indexPath = path.join(publicDir, 'index.html');
+
+/**
+ * CORS must come BEFORE routes.
+ * This fixes the web app Sync With Discord button:
+ * OPTIONS /api/discord/sync 200
+ * then POST /api/discord/sync 200
+ */
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.header('Access-Control-Max-Age', '86400');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).send('ok');
+  }
+
+  next();
+});
+
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginResourcePolicy: false
+}));
+
+app.use(morgan('dev'));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 if (fs.existsSync(publicDir)) {
   app.use(express.static(publicDir));
@@ -40,7 +66,13 @@ app.get('/', (req, res) => {
     discord: process.env.DISCORD_TOKEN ? 'configured' : 'missing_token',
     ttsMode: process.env.TTS_MODE || 'mock',
     piperUrl: process.env.PIPER_TTS_URL || null,
-    sttMode: process.env.STT_MODE || 'manual'
+    sttMode: process.env.STT_MODE || 'manual',
+    discordGuildId: process.env.DISCORD_GUILD_ID || null,
+    defaultVoiceChannelId: process.env.SKYECHO_DEFAULT_VOICE_CHANNEL_ID || null,
+    syncRoutes: [
+      'POST /api/discord/sync',
+      'GET /api/discord/syncs'
+    ]
   });
 });
 
@@ -51,7 +83,9 @@ app.get('/health', (req, res) => {
     status: 'healthy',
     ttsMode: process.env.TTS_MODE || 'mock',
     piperUrl: process.env.PIPER_TTS_URL || null,
-    sttMode: process.env.STT_MODE || 'manual'
+    sttMode: process.env.STT_MODE || 'manual',
+    discordGuildId: process.env.DISCORD_GUILD_ID || null,
+    defaultVoiceChannelId: process.env.SKYECHO_DEFAULT_VOICE_CHANNEL_ID || null
   });
 });
 
@@ -61,8 +95,101 @@ app.get('/api/health', (req, res) => {
     service: 'SkyEcho ATC Discord Bot',
     tts: process.env.TTS_MODE || 'mock',
     piperUrl: process.env.PIPER_TTS_URL || null,
-    stt: process.env.STT_MODE || 'manual'
+    stt: process.env.STT_MODE || 'manual',
+    discordGuildId: process.env.DISCORD_GUILD_ID || null,
+    defaultVoiceChannelId: process.env.SKYECHO_DEFAULT_VOICE_CHANNEL_ID || null
   });
+});
+
+/**
+ * Discord Web App Sync
+ *
+ * The web app should POST here when the user presses Sync With Discord.
+ * The user should NOT need to type a Discord session ID.
+ */
+app.post('/api/discord/sync', (req, res) => {
+  try {
+    const payload = req.body || {};
+
+    console.log('[DiscordSync] POST received', {
+      bodyKeys: Object.keys(payload),
+      callsign: payload.callsign,
+      spokenCallsign: payload.spokenCallsign,
+      departure: payload.departure || payload.origin,
+      arrival: payload.arrival || payload.destination,
+      route: payload.route,
+      cruise: payload.cruise,
+      aircraft: payload.aircraft,
+      trafficDensity: payload.trafficDensity,
+      discordGuildId: payload.discordGuildId,
+      discordChannelId: payload.discordChannelId
+    });
+
+    const sync = saveDiscordSync({
+      ...payload,
+      discordGuildId: payload.discordGuildId || process.env.DISCORD_GUILD_ID || null,
+      discordChannelId:
+        payload.discordChannelId ||
+        process.env.SKYECHO_DEFAULT_VOICE_CHANNEL_ID ||
+        null
+    });
+
+    console.log('[DiscordSync] saved', {
+      syncId: sync.syncId,
+      pairingCode: sync.pairingCode,
+      callsign: sync.callsign,
+      spokenCallsign: sync.spokenCallsign,
+      channel: sync.discordChannelId,
+      guild: sync.discordGuildId,
+      route: sync.route,
+      cruise: sync.cruise,
+      expiresAt: sync.expiresAt
+    });
+
+    res.json({
+      ok: true,
+      status: 'discord_synced',
+      message: 'SkyEcho session synced with Discord.',
+      syncId: sync.syncId,
+      pairingCode: sync.pairingCode,
+      discordGuildId: sync.discordGuildId,
+      discordChannelId: sync.discordChannelId,
+      callsign: sync.callsign,
+      spokenCallsign: sync.spokenCallsign,
+      departure: sync.departure,
+      arrival: sync.arrival,
+      route: sync.route,
+      cruise: sync.cruise,
+      aircraft: sync.aircraft,
+      trafficDensity: sync.trafficDensity,
+      expiresAt: sync.expiresAt,
+      instructions: sync.discordChannelId
+        ? 'Join the assigned SkyEcho Discord voice channel from Xbox.'
+        : `Join Discord voice and say: SkyEcho sync code ${sync.pairingCode}.`
+    });
+  } catch (err) {
+    console.error('[DiscordSync] failed', err);
+
+    res.status(500).json({
+      ok: false,
+      status: 'discord_sync_failed',
+      error: err?.message || 'Discord sync failed'
+    });
+  }
+});
+
+app.get('/api/discord/syncs', (req, res) => {
+  try {
+    res.json({
+      ok: true,
+      pending: listPendingSyncs()
+    });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err?.message || 'Failed to list pending syncs'
+    });
+  }
 });
 
 /**
@@ -149,6 +276,8 @@ app.post('/api/session/:id/discord-speak', async (req, res) => {
 
 /**
  * Optional frontend fallback
+ *
+ * Keep this LAST so it does not interfere with API routes.
  */
 app.get('*', (req, res) => {
   if (fs.existsSync(indexPath)) {
