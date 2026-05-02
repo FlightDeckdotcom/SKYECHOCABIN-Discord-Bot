@@ -497,21 +497,16 @@ async function handleMutePtt(oldState, newState) {
 }
 
 function getNormalizerContext(session) {
-  const fallbackCallsign = 'LIAT319';
-
   const callsign =
     session?.callsign ||
     session?.flightNumber ||
     session?.aircraftCallsign ||
-    fallbackCallsign;
-
-  const spokenCallsign =
-    session?.spokenCallsign ||
-    speakCallsign(callsign);
+    session?.syncId ||
+    '';
 
   return {
     callsign,
-    spokenCallsign,
+    spokenCallsign: callsign ? speakCallsign(callsign) : '',
     departure: session?.departure || session?.origin || 'TKPK',
     arrival: session?.arrival || session?.destination || 'TAPA',
     route: session?.route || 'TKPK SKB G633 ANU DCT TAPA',
