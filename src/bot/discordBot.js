@@ -16,6 +16,7 @@ import { synthesizeSpeech } from '../tts/ttsEngine.js';
 import { transcribeAudioFile } from '../stt/sttEngine.js';
 import { startPilotRecording, stopPilotRecording } from './voiceRecorder.js';
 import { log, warn } from '../utils/logger.js';
+import { normalizeAviationStt } from '../utils/aviationSttNormalizer.js';
 
 import {
   consumePendingSyncForChannel,
@@ -178,7 +179,13 @@ export async function startDiscordBot() {
 
         if (p && !p.sessionId) p.sessionId = session.id;
 
-        const result = handlePilotText(session, interaction.options.getString('text'));
+        const rawText = interaction.options.getString('text') || '';
+        const cleanedText = normalizeAviationStt(rawText, getNormalizerContext(session));
+
+        log('STT', `${interaction.user.username} MANUAL RAW: ${rawText}`);
+        log('STT', `${interaction.user.username} MANUAL CLEAN: ${cleanedText}`);
+
+        const result = handlePilotText(session, cleanedText);
 
         await speakToGuild(interaction.guildId, result.text, 'atc');
         await safeReply(interaction, `ATC: ${result.text}`);
@@ -237,6 +244,7 @@ export async function startDiscordBot() {
             `Session ID: ${p?.sessionId || 'none'}`,
             `STT_MODE: ${process.env.STT_MODE || 'manual'}`,
             `PTT method: Discord mute/unmute`,
+            `STT cleanup: aviation normalizer enabled`,
             `OpenAI key present: ${process.env.OPENAI_API_KEY ? 'yes' : 'no'}`,
             `Vosk model: ${process.env.VOSK_MODEL_PATH || './models/vosk-model-small-en-us-0.15'}`,
             `Autojoin channels: ${process.env.SKYECHO_AUTOJOIN_CHANNEL_IDS || process.env.SKYECHO_DEFAULT_VOICE_CHANNEL_ID || 'not set'}`
@@ -457,8 +465,6 @@ async function handleMutePtt(oldState, newState) {
     return;
   }
 
-  log('STT', `${displayName}: ${stt.text}`);
-
   const session =
     record.sessionId
       ? getSession(record.sessionId)
@@ -472,9 +478,70 @@ async function handleMutePtt(oldState, newState) {
 
   if (!record.sessionId) record.sessionId = session.id;
 
-  const result = handlePilotText(session, stt.text);
+  const cleanedText = normalizeAviationStt(
+    stt.text,
+    getNormalizerContext(session)
+  );
+
+  log('STT', `${displayName} RAW: ${stt.text}`);
+  log('STT', `${displayName} CLEAN: ${cleanedText}`);
+
+  if (!cleanedText || cleanedText.length < 2) {
+    warn('STT', `Cleaned transcript empty for ${displayName}. Raw: ${stt.text}`);
+    return;
+  }
+
+  const result = handlePilotText(session, cleanedText);
 
   await speakToGuild(guildId, result.text, 'atc');
+}
+
+function getNormalizerContext(session) {
+  const fallbackCallsign = 'LIAT319';
+
+  const callsign =
+    session?.callsign ||
+    session?.flightNumber ||
+    session?.aircraftCallsign ||
+    fallbackCallsign;
+
+  const spokenCallsign =
+    session?.spokenCallsign ||
+    speakCallsign(callsign);
+
+  return {
+    callsign,
+    spokenCallsign,
+    departure: session?.departure || session?.origin || 'TKPK',
+    arrival: session?.arrival || session?.destination || 'TAPA',
+    route: session?.route || 'TKPK SKB G633 ANU DCT TAPA',
+    cruise: session?.cruise || 'FL310',
+    runway: session?.assigned?.runway || session?.runway || '07'
+  };
+}
+
+function speakCallsign(callsign) {
+  const raw = String(callsign || 'LIAT319')
+    .toUpperCase()
+    .replace(/\s+/g, '');
+
+  const airline = raw.match(/^[A-Z]+/)?.[0] || 'LIAT';
+  const numbers = raw.match(/\d+/)?.[0] || '319';
+
+  const digitWords = {
+    0: 'zero',
+    1: 'one',
+    2: 'two',
+    3: 'three',
+    4: 'four',
+    5: 'five',
+    6: 'six',
+    7: 'seven',
+    8: 'eight',
+    9: 'niner'
+  };
+
+  return `${airline} ${numbers.split('').map(d => digitWords[d] || d).join(' ')}`;
 }
 
 function joinUserVoice(interaction) {
