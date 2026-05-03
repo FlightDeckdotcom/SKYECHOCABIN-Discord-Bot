@@ -25,7 +25,39 @@ import {
 } from '../discord/discordSyncStore.js';
 
 const players = new Map();
+const radioState = new Map();
 let client;
+
+function getRadioState(guildId) {
+  if (!radioState.has(guildId)) {
+    radioState.set(guildId, {
+      userPttActive: false,
+      atcSpeaking: false,
+      trafficSpeaking: false,
+      lastUserTxAt: 0,
+      lastAtcTxAt: 0,
+      lastTrafficTxAt: 0
+    });
+  }
+
+  return radioState.get(guildId);
+}
+
+export function isDiscordRadioBusy(guildId, reason = 'traffic') {
+  const s = getRadioState(guildId);
+  const now = Date.now();
+
+  if (s.userPttActive) return true;
+  if (s.atcSpeaking) return true;
+  if (s.trafficSpeaking) return true;
+
+  if (now - s.lastUserTxAt < 3500) return true;
+  if (now - s.lastAtcTxAt < 2500) return true;
+
+  if (reason === 'traffic' && now - s.lastTrafficTxAt < 5000) return true;
+
+  return false;
+}
 
 export function getSlashCommands() {
   return [
@@ -124,6 +156,7 @@ export async function startDiscordBot() {
 
         p?.connection?.destroy();
         players.delete(key);
+        radioState.delete(key);
 
         await safeReply(interaction, 'SkyEcho left voice channel.');
         return;
@@ -258,6 +291,7 @@ export async function startDiscordBot() {
         await deferSafe(interaction, true);
 
         const p = players.get(interaction.guildId);
+        const radio = getRadioState(interaction.guildId);
 
         await safeReply(
           interaction,
@@ -271,6 +305,10 @@ export async function startDiscordBot() {
             `VHF FX: ${process.env.DISCORD_VHF_FX || 'false'}`,
             `Traffic region: ${process.env.TRAFFIC_REGION || 'auto'}`,
             `Traffic density: ${process.env.TRAFFIC_DENSITY_DEFAULT || '2'}`,
+            `Radio busy: ${isDiscordRadioBusy(interaction.guildId, 'status') ? 'yes' : 'no'}`,
+            `User PTT active: ${radio.userPttActive ? 'yes' : 'no'}`,
+            `ATC speaking: ${radio.atcSpeaking ? 'yes' : 'no'}`,
+            `Traffic speaking: ${radio.trafficSpeaking ? 'yes' : 'no'}`,
             `OpenAI key present: ${process.env.OPENAI_API_KEY ? 'yes' : 'no'}`,
             `Vosk model: ${process.env.VOSK_MODEL_PATH || './models/vosk-model-small-en-us-0.15'}`,
             `Autojoin channels: ${process.env.SKYECHO_AUTOJOIN_CHANNEL_IDS || process.env.SKYECHO_DEFAULT_VOICE_CHANNEL_ID || 'not set'}`
@@ -285,11 +323,6 @@ export async function startDiscordBot() {
     }
   });
 
-  /**
-   * AUTO RADIO BRIDGE:
-   * User joins approved SkyEcho voice channel → bot joins automatically.
-   * No /join required.
-   */
   client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
     try {
       if (newState.member?.user?.bot) return;
@@ -334,10 +367,6 @@ async function autoStartRadioBridge(newState) {
 
   let session = null;
 
-  /**
-   * First preference:
-   * Use a synced session for this channel from the web app.
-   */
   const synced = consumePendingSyncForChannel(channelId, userId);
 
   if (synced) {
@@ -391,10 +420,6 @@ async function autoStartRadioBridge(newState) {
     return;
   }
 
-  /**
-   * Second preference:
-   * Resume active sync for this Discord user.
-   */
   const active = getActiveSyncForDiscordUser(userId);
 
   if (active) {
@@ -437,10 +462,6 @@ async function autoStartRadioBridge(newState) {
     return;
   }
 
-  /**
-   * Fallback:
-   * No web sync found. Create safe default voice-only session.
-   */
   if (!record.sessionId) {
     session = createSession({
       guildId,
@@ -487,6 +508,9 @@ async function handleMutePtt(oldState, newState) {
   }
 
   if (!newState.selfMute) {
+    const radio = getRadioState(guildId);
+    radio.userPttActive = true;
+
     startPilotRecording({
       guildId,
       connection: record.connection,
@@ -501,6 +525,10 @@ async function handleMutePtt(oldState, newState) {
     guildId,
     userId: newState.id
   });
+
+  const radio = getRadioState(guildId);
+  radio.userPttActive = false;
+  radio.lastUserTxAt = Date.now();
 
   if (!rec.ok) {
     warn('DiscordPTT', `Recording ignored for ${displayName}: ${rec.reason || 'unknown'}`);
@@ -565,7 +593,8 @@ function maybeStartDiscordTraffic({ guildId, sessionId }) {
     guildId,
     sessionId,
     speakToGuild,
-    getSession
+    getSession,
+    isRadioBusy: isDiscordRadioBusy
   });
 }
 
@@ -741,33 +770,71 @@ export async function speakToGuild(guildId, text, role = 'atc') {
     return { ok: false, reason: 'not_joined' };
   }
 
-  const audio = await synthesizeSpeech({ text, role });
+  const radio = getRadioState(guildId);
 
-  if (!audio.playable) {
-    log('DiscordMockSpeak', `${role.toUpperCase()}: ${text}`);
-    return { ok: true, mock: true, audio };
+  if (role === 'traffic') {
+    radio.trafficSpeaking = true;
+  } else {
+    radio.atcSpeaking = true;
   }
 
-  const fullPath = path.join(
-    process.cwd(),
-    'public',
-    audio.url.replace(/^\//, '')
-  );
+  try {
+    const audio = await synthesizeSpeech({ text, role });
 
-  const resource = createAudioResource(fullPath);
+    if (!audio.playable) {
+      log('DiscordMockSpeak', `${role.toUpperCase()}: ${text}`);
 
-  record.player.play(resource);
+      if (role === 'traffic') {
+        radio.trafficSpeaking = false;
+        radio.lastTrafficTxAt = Date.now();
+      } else {
+        radio.atcSpeaking = false;
+        radio.lastAtcTxAt = Date.now();
+      }
 
-  return new Promise(resolve => {
-    let resolved = false;
+      return { ok: true, mock: true, audio };
+    }
 
-    const done = () => {
-      if (resolved) return;
-      resolved = true;
-      resolve({ ok: true, audio });
-    };
+    const fullPath = path.join(
+      process.cwd(),
+      'public',
+      audio.url.replace(/^\//, '')
+    );
 
-    record.player.once(AudioPlayerStatus.Idle, done);
-    setTimeout(done, 15000);
-  });
+    const resource = createAudioResource(fullPath);
+
+    record.player.play(resource);
+
+    return await new Promise(resolve => {
+      let resolved = false;
+
+      const done = () => {
+        if (resolved) return;
+        resolved = true;
+
+        if (role === 'traffic') {
+          radio.trafficSpeaking = false;
+          radio.lastTrafficTxAt = Date.now();
+        } else {
+          radio.atcSpeaking = false;
+          radio.lastAtcTxAt = Date.now();
+        }
+
+        resolve({ ok: true, audio });
+      };
+
+      record.player.once(AudioPlayerStatus.Idle, done);
+      setTimeout(done, 15000);
+    });
+  } catch (err) {
+    if (role === 'traffic') {
+      radio.trafficSpeaking = false;
+      radio.lastTrafficTxAt = Date.now();
+    } else {
+      radio.atcSpeaking = false;
+      radio.lastAtcTxAt = Date.now();
+    }
+
+    throw err;
+  }
 }
