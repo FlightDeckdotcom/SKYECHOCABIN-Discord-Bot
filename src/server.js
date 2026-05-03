@@ -16,12 +16,33 @@ import { log } from './utils/logger.js';
 
 import { saveDiscordSync, listPendingSyncs } from './discord/discordSyncStore.js';
 
+import {
+  loadNavData,
+  getNavDataStatus,
+  getAirportBundle,
+  getTaxiInstructionFromCsv
+} from './nav/navDataStore.js';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const port = Number(process.env.PORT || 8787);
 
 const publicDir = path.resolve('public');
 const indexPath = path.join(publicDir, 'index.html');
+
+/**
+ * Load CSV nav data on boot.
+ * CSV files are expected in:
+ * data/airports.csv
+ * data/runways.csv
+ * data/airport-frequencies.csv
+ * data/navaids.csv
+ */
+try {
+  loadNavData();
+} catch (err) {
+  console.error('[NavData] Boot load failed:', err?.stack || err?.message || err);
+}
 
 /**
  * CORS must come BEFORE routes.
@@ -69,10 +90,31 @@ app.get('/', (req, res) => {
     sttMode: process.env.STT_MODE || 'manual',
     discordGuildId: process.env.DISCORD_GUILD_ID || null,
     defaultVoiceChannelId: process.env.SKYECHO_DEFAULT_VOICE_CHANNEL_ID || null,
-    syncRoutes: [
-      'POST /api/discord/sync',
-      'GET /api/discord/syncs'
-    ]
+    routes: {
+      health: [
+        'GET /',
+        'GET /health',
+        'GET /api/health'
+      ],
+      discordSync: [
+        'POST /api/discord/sync',
+        'GET /api/discord/syncs'
+      ],
+      navData: [
+        'GET /api/nav/status',
+        'GET /api/nav/airport/:icao',
+        'GET /api/nav/taxi/:icao/:runway'
+      ],
+      sessions: [
+        'POST /api/session',
+        'GET /api/sessions',
+        'GET /api/session/:id',
+        'DELETE /api/session/:id',
+        'POST /api/session/:id/pilot-text',
+        'POST /api/session/:id/traffic',
+        'POST /api/session/:id/discord-speak'
+      ]
+    }
   });
 });
 
@@ -85,7 +127,8 @@ app.get('/health', (req, res) => {
     piperUrl: process.env.PIPER_TTS_URL || null,
     sttMode: process.env.STT_MODE || 'manual',
     discordGuildId: process.env.DISCORD_GUILD_ID || null,
-    defaultVoiceChannelId: process.env.SKYECHO_DEFAULT_VOICE_CHANNEL_ID || null
+    defaultVoiceChannelId: process.env.SKYECHO_DEFAULT_VOICE_CHANNEL_ID || null,
+    navData: getNavDataStatus()
   });
 });
 
@@ -97,8 +140,56 @@ app.get('/api/health', (req, res) => {
     piperUrl: process.env.PIPER_TTS_URL || null,
     stt: process.env.STT_MODE || 'manual',
     discordGuildId: process.env.DISCORD_GUILD_ID || null,
-    defaultVoiceChannelId: process.env.SKYECHO_DEFAULT_VOICE_CHANNEL_ID || null
+    defaultVoiceChannelId: process.env.SKYECHO_DEFAULT_VOICE_CHANNEL_ID || null,
+    navData: getNavDataStatus()
   });
+});
+
+/**
+ * Nav Data Routes
+ *
+ * These prove the CSV files in /data are being loaded and used.
+ */
+app.get('/api/nav/status', (req, res) => {
+  try {
+    res.json(getNavDataStatus());
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err?.message || 'nav status failed'
+    });
+  }
+});
+
+app.get('/api/nav/airport/:icao', (req, res) => {
+  try {
+    res.json(getAirportBundle(req.params.icao));
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      icao: req.params.icao,
+      error: err?.message || 'airport lookup failed'
+    });
+  }
+});
+
+app.get('/api/nav/taxi/:icao/:runway', (req, res) => {
+  try {
+    res.json(
+      getTaxiInstructionFromCsv({
+        airportIcao: req.params.icao,
+        runway: req.params.runway,
+        parking: req.query.parking || ''
+      })
+    );
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      icao: req.params.icao,
+      runway: req.params.runway,
+      error: err?.message || 'taxi lookup failed'
+    });
+  }
 });
 
 /**
@@ -306,8 +397,11 @@ wss.on('connection', ws => {
 
 function broadcast(data) {
   const msg = JSON.stringify(data);
+
   for (const ws of sockets) {
-    if (ws.readyState === 1) ws.send(msg);
+    if (ws.readyState === 1) {
+      ws.send(msg);
+    }
   }
 }
 
