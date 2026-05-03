@@ -1,6 +1,7 @@
 // src/nav/navDataStore.js
 // SkyEcho CSV Nav Data Store
-// Reads CSV files from /data and exposes airport, runway, frequency, and navaid lookup.
+// Reads CSV files from /data and exposes airport, runway, frequency, navaid,
+// taxiway, apron, stopway, ATS route, designated point, ILS, and procedure helper lookup.
 
 import fs from 'fs';
 import path from 'path';
@@ -18,10 +19,31 @@ const store = {
   regions: [],
   comments: [],
 
+  pendingTaxiways: [],
+  pendingAprons: [],
+  pendingStopways: [],
+  pendingAtsRoutes: [],
+  pendingDesignatedPoints: [],
+  pendingIlsSystems: [],
+  pendingIlsComponents: [],
+  pendingNavaidSystems: [],
+  pendingNavaidComponents: [],
+  routePortions: [],
+  airportRunwayTaxiway: [],
+
   airportByIdent: new Map(),
   runwaysByAirport: new Map(),
   frequenciesByAirport: new Map(),
-  navaidsByIdent: new Map()
+  navaidsByIdent: new Map(),
+
+  taxiwaysByAirport: new Map(),
+  apronsByAirport: new Map(),
+  stopwaysByAirport: new Map(),
+  atsRoutesByAirport: new Map(),
+  designatedPointsByIdent: new Map(),
+  ilsByAirport: new Map(),
+  routePortionsByRoute: new Map(),
+  airportRunwayTaxiwayByAirport: new Map()
 };
 
 export function loadNavData() {
@@ -35,16 +57,91 @@ export function loadNavData() {
   store.regions = readCsv('regions.csv');
   store.comments = readCsv('airport-comments.csv');
 
+  store.pendingTaxiways = readCsv('Pending_AM_Taxiway.csv');
+  store.pendingAprons = readCsv('Pending_AM_Apron.csv');
+  store.pendingStopways = readCsv('Pending_AM_Stopway.csv');
+  store.pendingAtsRoutes = readCsv('Pending_ATS_Route.csv');
+  store.pendingDesignatedPoints = readCsv('Pending_Designated_Point.csv');
+  store.pendingIlsSystems = readCsv('Pending_ILS_System.csv');
+  store.pendingIlsComponents = readCsv('Pending_ILS_Component.csv');
+  store.pendingNavaidSystems = readCsv('Pending_NAVAID_System.csv');
+  store.pendingNavaidComponents = readCsv('Pending_NAVAID_Component.csv');
+  store.routePortions = readCsv('RoutePortionPending.csv');
+  store.airportRunwayTaxiway = readCsv('Airport_Runway_and_Taxiway.csv');
+
+  clearIndexes();
+  buildAirportIndex();
+  buildRunwayIndex();
+  buildFrequencyIndex();
+  buildNavaidIndex();
+  buildTaxiwayIndex();
+  buildApronIndex();
+  buildStopwayIndex();
+  buildAtsRouteIndex();
+  buildDesignatedPointIndex();
+  buildIlsIndex();
+  buildRoutePortionIndex();
+  buildAirportRunwayTaxiwayIndex();
+
+  loaded = true;
+
+  console.log('[NavData] Loaded CSV data:', {
+    dataDir: DATA_DIR,
+
+    airports: store.airports.length,
+    runways: store.runways.length,
+    frequencies: store.frequencies.length,
+    navaids: store.navaids.length,
+    countries: store.countries.length,
+    regions: store.regions.length,
+    comments: store.comments.length,
+
+    pendingTaxiways: store.pendingTaxiways.length,
+    pendingAprons: store.pendingAprons.length,
+    pendingStopways: store.pendingStopways.length,
+    pendingAtsRoutes: store.pendingAtsRoutes.length,
+    pendingDesignatedPoints: store.pendingDesignatedPoints.length,
+    pendingIlsSystems: store.pendingIlsSystems.length,
+    pendingIlsComponents: store.pendingIlsComponents.length,
+    pendingNavaidSystems: store.pendingNavaidSystems.length,
+    pendingNavaidComponents: store.pendingNavaidComponents.length,
+    routePortions: store.routePortions.length,
+    airportRunwayTaxiway: store.airportRunwayTaxiway.length
+  });
+
+  return store;
+}
+
+function clearIndexes() {
   store.airportByIdent.clear();
   store.runwaysByAirport.clear();
   store.frequenciesByAirport.clear();
   store.navaidsByIdent.clear();
 
+  store.taxiwaysByAirport.clear();
+  store.apronsByAirport.clear();
+  store.stopwaysByAirport.clear();
+  store.atsRoutesByAirport.clear();
+  store.designatedPointsByIdent.clear();
+  store.ilsByAirport.clear();
+  store.routePortionsByRoute.clear();
+  store.airportRunwayTaxiwayByAirport.clear();
+}
+
+function buildAirportIndex() {
   for (const airport of store.airports) {
-    const ident = norm(airport.ident || airport.icao || airport.gps_code || airport.local_code);
+    const ident = norm(
+      airport.ident ||
+      airport.icao ||
+      airport.gps_code ||
+      airport.local_code
+    );
+
     if (ident) store.airportByIdent.set(ident, airport);
   }
+}
 
+function buildRunwayIndex() {
   for (const runway of store.runways) {
     const airportIdent = norm(
       runway.airport_ident ||
@@ -55,13 +152,11 @@ export function loadNavData() {
 
     if (!airportIdent) continue;
 
-    if (!store.runwaysByAirport.has(airportIdent)) {
-      store.runwaysByAirport.set(airportIdent, []);
-    }
-
-    store.runwaysByAirport.get(airportIdent).push(runway);
+    pushMapArray(store.runwaysByAirport, airportIdent, runway);
   }
+}
 
+function buildFrequencyIndex() {
   for (const freq of store.frequencies) {
     const airportIdent = norm(
       freq.airport_ident ||
@@ -72,32 +167,126 @@ export function loadNavData() {
 
     if (!airportIdent) continue;
 
-    if (!store.frequenciesByAirport.has(airportIdent)) {
-      store.frequenciesByAirport.set(airportIdent, []);
-    }
-
-    store.frequenciesByAirport.get(airportIdent).push(freq);
+    pushMapArray(store.frequenciesByAirport, airportIdent, freq);
   }
+}
 
+function buildNavaidIndex() {
   for (const nav of store.navaids) {
     const ident = norm(nav.ident || nav.name);
     if (ident) store.navaidsByIdent.set(ident, nav);
   }
 
-  loaded = true;
+  for (const nav of store.pendingNavaidSystems) {
+    const ident = norm(
+      nav.IDENT ||
+      nav.NAVAID_ID ||
+      nav.FAA_ID ||
+      nav.DESIGNATOR ||
+      nav.NAME
+    );
 
-  console.log('[NavData] Loaded CSV data:', {
-    dataDir: DATA_DIR,
-    airports: store.airports.length,
-    runways: store.runways.length,
-    frequencies: store.frequencies.length,
-    navaids: store.navaids.length,
-    countries: store.countries.length,
-    regions: store.regions.length,
-    comments: store.comments.length
-  });
+    if (ident && !store.navaidsByIdent.has(ident)) {
+      store.navaidsByIdent.set(ident, nav);
+    }
+  }
+}
 
-  return store;
+function buildTaxiwayIndex() {
+  for (const twy of store.pendingTaxiways) {
+    const airportIdent = getAirportIdentFromPending(twy);
+    if (!airportIdent) continue;
+
+    pushMapArray(store.taxiwaysByAirport, airportIdent, normalizeTaxiwayRecord(twy));
+  }
+}
+
+function buildApronIndex() {
+  for (const apron of store.pendingAprons) {
+    const airportIdent = getAirportIdentFromPending(apron);
+    if (!airportIdent) continue;
+
+    pushMapArray(store.apronsByAirport, airportIdent, apron);
+  }
+}
+
+function buildStopwayIndex() {
+  for (const stopway of store.pendingStopways) {
+    const airportIdent = getAirportIdentFromPending(stopway);
+    if (!airportIdent) continue;
+
+    pushMapArray(store.stopwaysByAirport, airportIdent, stopway);
+  }
+}
+
+function buildAtsRouteIndex() {
+  for (const route of store.pendingAtsRoutes) {
+    const airportIdent = getAirportIdentFromPending(route);
+    if (!airportIdent) continue;
+
+    pushMapArray(store.atsRoutesByAirport, airportIdent, route);
+  }
+}
+
+function buildDesignatedPointIndex() {
+  for (const point of store.pendingDesignatedPoints) {
+    const ident = norm(
+      point.IDENT ||
+      point.DESIGNATOR ||
+      point.FIX_ID ||
+      point.NAME ||
+      point.OBJECTID
+    );
+
+    if (ident) store.designatedPointsByIdent.set(ident, point);
+  }
+}
+
+function buildIlsIndex() {
+  for (const ils of store.pendingIlsSystems) {
+    const airportIdent = getAirportIdentFromPending(ils);
+    if (!airportIdent) continue;
+
+    pushMapArray(store.ilsByAirport, airportIdent, ils);
+  }
+
+  for (const ils of store.pendingIlsComponents) {
+    const airportIdent = getAirportIdentFromPending(ils);
+    if (!airportIdent) continue;
+
+    pushMapArray(store.ilsByAirport, airportIdent, ils);
+  }
+}
+
+function buildRoutePortionIndex() {
+  for (const route of store.routePortions) {
+    const routeId = norm(
+      route.ROUTE_ID ||
+      route.ATS_ROUTE_ID ||
+      route.DESIGNATOR ||
+      route.ROUTE ||
+      route.NAME
+    );
+
+    if (!routeId) continue;
+
+    pushMapArray(store.routePortionsByRoute, routeId, route);
+  }
+}
+
+function buildAirportRunwayTaxiwayIndex() {
+  for (const row of store.airportRunwayTaxiway) {
+    const airportIdent = norm(
+      row.ICAO_ID ||
+      row.AIRPORT_IDENT ||
+      row.AIRPORT_ID ||
+      row.FAA_ID
+    );
+
+    if (!airportIdent) continue;
+
+    pushMapArray(store.airportRunwayTaxiwayByAirport, airportIdent, row);
+  }
 }
 
 export function getNavDataStatus() {
@@ -114,7 +303,33 @@ export function getNavDataStatus() {
       navaids: store.navaids.length,
       countries: store.countries.length,
       regions: store.regions.length,
-      comments: store.comments.length
+      comments: store.comments.length,
+
+      pendingTaxiways: store.pendingTaxiways.length,
+      pendingAprons: store.pendingAprons.length,
+      pendingStopways: store.pendingStopways.length,
+      pendingAtsRoutes: store.pendingAtsRoutes.length,
+      pendingDesignatedPoints: store.pendingDesignatedPoints.length,
+      pendingIlsSystems: store.pendingIlsSystems.length,
+      pendingIlsComponents: store.pendingIlsComponents.length,
+      pendingNavaidSystems: store.pendingNavaidSystems.length,
+      pendingNavaidComponents: store.pendingNavaidComponents.length,
+      routePortions: store.routePortions.length,
+      airportRunwayTaxiway: store.airportRunwayTaxiway.length
+    },
+    indexed: {
+      airports: store.airportByIdent.size,
+      runwayAirports: store.runwaysByAirport.size,
+      frequencyAirports: store.frequenciesByAirport.size,
+      navaids: store.navaidsByIdent.size,
+      taxiwayAirports: store.taxiwaysByAirport.size,
+      apronAirports: store.apronsByAirport.size,
+      stopwayAirports: store.stopwaysByAirport.size,
+      atsRouteAirports: store.atsRoutesByAirport.size,
+      designatedPoints: store.designatedPointsByIdent.size,
+      ilsAirports: store.ilsByAirport.size,
+      routePortions: store.routePortionsByRoute.size,
+      airportRunwayTaxiwayAirports: store.airportRunwayTaxiwayByAirport.size
     },
     files: {
       airports: fileExists('airports.csv'),
@@ -123,7 +338,19 @@ export function getNavDataStatus() {
       navaids: fileExists('navaids.csv'),
       countries: fileExists('countries.csv'),
       regions: fileExists('regions.csv'),
-      comments: fileExists('airport-comments.csv')
+      comments: fileExists('airport-comments.csv'),
+
+      pendingTaxiways: fileExists('Pending_AM_Taxiway.csv'),
+      pendingAprons: fileExists('Pending_AM_Apron.csv'),
+      pendingStopways: fileExists('Pending_AM_Stopway.csv'),
+      pendingAtsRoutes: fileExists('Pending_ATS_Route.csv'),
+      pendingDesignatedPoints: fileExists('Pending_Designated_Point.csv'),
+      pendingIlsSystems: fileExists('Pending_ILS_System.csv'),
+      pendingIlsComponents: fileExists('Pending_ILS_Component.csv'),
+      pendingNavaidSystems: fileExists('Pending_NAVAID_System.csv'),
+      pendingNavaidComponents: fileExists('Pending_NAVAID_Component.csv'),
+      routePortions: fileExists('RoutePortionPending.csv'),
+      airportRunwayTaxiway: fileExists('Airport_Runway_and_Taxiway.csv')
     }
   };
 }
@@ -150,6 +377,10 @@ export function getAirportBundle(icao) {
       airport: null,
       runways: [],
       frequencies: [],
+      taxiways: [],
+      aprons: [],
+      stopways: [],
+      ils: [],
       navaidsNearby: []
     };
   }
@@ -160,6 +391,10 @@ export function getAirportBundle(icao) {
     airport,
     runways: getRunways(ident),
     frequencies: getFrequencies(ident),
+    taxiways: getTaxiways(ident),
+    aprons: getAprons(ident),
+    stopways: getStopways(ident),
+    ils: getIlsSystems(ident),
     navaidsNearby: getNearbyNavaidsForAirport(ident)
   };
 }
@@ -176,6 +411,34 @@ export function getFrequencies(icao) {
 
   const ident = norm(icao);
   return store.frequenciesByAirport.get(ident) || [];
+}
+
+export function getTaxiways(icao) {
+  loadNavData();
+
+  const ident = norm(icao);
+  return store.taxiwaysByAirport.get(ident) || [];
+}
+
+export function getAprons(icao) {
+  loadNavData();
+
+  const ident = norm(icao);
+  return store.apronsByAirport.get(ident) || [];
+}
+
+export function getStopways(icao) {
+  loadNavData();
+
+  const ident = norm(icao);
+  return store.stopwaysByAirport.get(ident) || [];
+}
+
+export function getIlsSystems(icao) {
+  loadNavData();
+
+  const ident = norm(icao);
+  return store.ilsByAirport.get(ident) || [];
 }
 
 export function getBestFrequency(icao, preferredType = '') {
@@ -228,8 +491,12 @@ export function getActiveRunway(icao, preferredRunway = '') {
     if (exact) return normalizeRunwayRecord(exact, preferred);
   }
 
-  const first = runways[0];
-  return normalizeRunwayRecord(first, normalizeRunway(first.le_ident || first.he_ident || ''));
+  const first = runways.find(r => String(r.closed || '').trim() !== '1') || runways[0];
+
+  return normalizeRunwayRecord(
+    first,
+    normalizeRunway(first.le_ident || first.he_ident || '')
+  );
 }
 
 export function getNavaid(ident) {
@@ -270,56 +537,204 @@ export function getTaxiInstructionFromCsv({
   runway,
   parking = ''
 }) {
+  loadNavData();
+
   const ident = norm(airportIcao);
   const activeRunway = getActiveRunway(ident, runway);
   const freq = getBestFrequency(ident, 'ground');
+
+  const requestedRunway =
+    activeRunway?.ident ||
+    normalizeRunway(runway) ||
+    '07';
+
+  const airportTaxiways = getTaxiways(ident);
+  const airportAprons = getAprons(ident);
+  const airportStopways = getStopways(ident);
+
+  const taxiRoute = inferTaxiRouteFromTaxiways({
+    airportIcao: ident,
+    runway: requestedRunway,
+    parking,
+    taxiways: airportTaxiways,
+    aprons: airportAprons,
+    stopways: airportStopways
+  });
 
   if (!activeRunway) {
     return {
       ok: false,
       reason: 'no_runway_data',
-      instruction: `taxi to runway ${speakRunway(runway || '07')} via Alpha, hold short runway ${speakRunway(runway || '07')}`,
-      frequency: freq
+      source: taxiRoute.source,
+      airportIcao: ident,
+      runway: {
+        ident: requestedRunway
+      },
+      frequency: freq,
+      taxiwaysAvailable: airportTaxiways.map(t => t.designator),
+      taxiRoute: taxiRoute.route,
+      instruction: `taxi to runway ${speakRunway(requestedRunway)} via ${taxiRoute.route}, hold short runway ${speakRunway(requestedRunway)}`
     };
   }
 
   const runwayText = speakRunway(activeRunway.ident);
 
-  // Your current CSV set does not include taxiway geometry/routes,
-  // so this uses runway/frequency data from CSV and keeps a safe fallback taxiway.
-  const taxiRoute = inferSimpleTaxiRoute({
-    airportIcao: ident,
-    runway: activeRunway.ident,
-    parking
-  });
-
   return {
     ok: true,
-    source: 'csv_runway_frequency_with_safe_taxi_fallback',
+    source: taxiRoute.source,
     airportIcao: ident,
     runway: activeRunway,
     frequency: freq,
-    taxiRoute,
-    instruction: `taxi to runway ${runwayText} via ${taxiRoute}, hold short runway ${runwayText}`
+    taxiwaysAvailable: airportTaxiways.map(t => t.designator),
+    apronCount: airportAprons.length,
+    stopwayCount: airportStopways.length,
+    taxiRoute: taxiRoute.route,
+    instruction: `taxi to runway ${runwayText} via ${taxiRoute.route}, hold short runway ${runwayText}`
   };
 }
 
-function inferSimpleTaxiRoute({ airportIcao, runway }) {
-  const icao = norm(airportIcao);
+function inferTaxiRouteFromTaxiways({
+  airportIcao,
+  runway,
+  parking,
+  taxiways = [],
+  aprons = [],
+  stopways = []
+}) {
+  const ident = norm(airportIcao);
   const rwy = normalizeRunway(runway);
 
-  // Until a real taxi_routes.csv exists, keep airport-specific safe defaults here.
-  if (icao === 'TKPK') {
-    if (rwy === '07') return 'Alpha';
-    if (rwy === '25') return 'Alpha';
+  const usableTaxiways = taxiways
+    .filter(t => t.designator)
+    .filter(t => String(t.operational || '').trim() !== '0')
+    .sort((a, b) => {
+      const aLen = Number(a.length || 0);
+      const bLen = Number(b.length || 0);
+      return bLen - aLen;
+    });
+
+  const uniqueDesignators = unique(
+    usableTaxiways
+      .map(t => cleanTaxiwayDesignator(t.designator))
+      .filter(Boolean)
+      .filter(x => !isBadTaxiwayDesignator(x))
+  );
+
+  if (uniqueDesignators.length) {
+    const selected = chooseTaxiwayDesignators({
+      airportIcao: ident,
+      runway: rwy,
+      parking,
+      designators: uniqueDesignators
+    });
+
+    return {
+      source: 'Pending_AM_Taxiway.csv_designators',
+      route: selected.join(' and ')
+    };
   }
 
-  if (icao === 'TJSJ') {
-    if (rwy === '10') return 'Alpha';
-    if (rwy === '08') return 'Alpha';
+  const combinedRows = store.airportRunwayTaxiwayByAirport.get(ident) || [];
+  const combinedDesignators = unique(
+    combinedRows
+      .map(row =>
+        row.TAXIWAY ||
+        row.TWY ||
+        row.TWY_ID ||
+        row.DESIGNATOR ||
+        row.TAXIWAY_DESIGNATOR
+      )
+      .map(cleanTaxiwayDesignator)
+      .filter(Boolean)
+      .filter(x => !isBadTaxiwayDesignator(x))
+  );
+
+  if (combinedDesignators.length) {
+    const selected = chooseTaxiwayDesignators({
+      airportIcao: ident,
+      runway: rwy,
+      parking,
+      designators: combinedDesignators
+    });
+
+    return {
+      source: 'Airport_Runway_and_Taxiway.csv_designators',
+      route: selected.join(' and ')
+    };
   }
 
-  return 'Alpha';
+  if (ident === 'TKPK') {
+    if (rwy === '07') return { source: 'airport_safe_fallback', route: 'Alpha' };
+    if (rwy === '25') return { source: 'airport_safe_fallback', route: 'Alpha' };
+  }
+
+  if (ident === 'TJSJ') {
+    if (rwy === '10') return { source: 'airport_safe_fallback', route: 'Alpha' };
+    if (rwy === '08') return { source: 'airport_safe_fallback', route: 'Alpha' };
+  }
+
+  return {
+    source: 'generic_safe_fallback',
+    route: 'Alpha'
+  };
+}
+
+function chooseTaxiwayDesignators({
+  airportIcao,
+  runway,
+  parking,
+  designators
+}) {
+  const names = unique(designators);
+
+  if (!names.length) return ['Alpha'];
+
+  const simple = names.filter(name => /^[A-Z]$/.test(name));
+  const compound = names.filter(name => /^[A-Z]_[A-Z0-9]+$/.test(name));
+  const numeric = names.filter(name => /^[A-Z][0-9]+$/.test(name));
+  const others = names.filter(name =>
+    !simple.includes(name) &&
+    !compound.includes(name) &&
+    !numeric.includes(name)
+  );
+
+  const ordered = [
+    ...simple,
+    ...numeric,
+    ...compound,
+    ...others
+  ];
+
+  const preferred = [];
+
+  for (const item of ordered) {
+    const base = item.split('_')[0];
+
+    if (base && !preferred.includes(base)) {
+      preferred.push(base);
+    }
+
+    if (preferred.length >= 2) break;
+  }
+
+  if (!preferred.length) return ['Alpha'];
+
+  return preferred.map(speakTaxiway);
+}
+
+function normalizeTaxiwayRecord(row) {
+  return {
+    raw: row,
+    objectId: row.OBJECTID || row.objectid || '',
+    faaId: norm(row.FAA_ID || row.faa_id),
+    icaoId: norm(row.ICAO_ID || row.icao_id),
+    airportIdent: getAirportIdentFromPending(row),
+    designator: cleanTaxiwayDesignator(row.DESIGNATOR || row.designator),
+    surface: row.SURFACE || row.surface || '',
+    operational: row.TWY_OPER || row.twy_oper || '',
+    area: row.Shape__Area || row.Shape_Area || row.shape_area || '',
+    length: row.Shape__Length || row.Shape_Length || row.shape_length || ''
+  };
 }
 
 function normalizeRunwayRecord(runway, selectedIdent = '') {
@@ -348,6 +763,92 @@ function normalizeFrequencyRecord(freq) {
   };
 }
 
+function getAirportIdentFromPending(row = {}) {
+  return norm(
+    row.ICAO_ID ||
+    row.ICAO ||
+    row.AIRPORT_ICAO ||
+    row.AIRPORT_IDENT ||
+    row.AIRPORT_ID ||
+    row.ARPT_ID ||
+    row.LOC_ID ||
+    row.FAA_ID
+  );
+}
+
+function cleanTaxiwayDesignator(value) {
+  return String(value || '')
+    .toUpperCase()
+    .trim()
+    .replace(/\s+/g, '')
+    .replace(/-/g, '_');
+}
+
+function isBadTaxiwayDesignator(value) {
+  const v = String(value || '').trim();
+
+  if (!v) return true;
+  if (v === 'N/A') return true;
+  if (v === 'NA') return true;
+  if (v === 'NONE') return true;
+  if (v === 'NULL') return true;
+  if (v === '-') return true;
+
+  return false;
+}
+
+function speakTaxiway(designator) {
+  const d = String(designator || '').toUpperCase().trim();
+
+  const phonetic = {
+    A: 'Alpha',
+    B: 'Bravo',
+    C: 'Charlie',
+    D: 'Delta',
+    E: 'Echo',
+    F: 'Foxtrot',
+    G: 'Golf',
+    H: 'Hotel',
+    I: 'India',
+    J: 'Juliet',
+    K: 'Kilo',
+    L: 'Lima',
+    M: 'Mike',
+    N: 'November',
+    O: 'Oscar',
+    P: 'Papa',
+    Q: 'Quebec',
+    R: 'Romeo',
+    S: 'Sierra',
+    T: 'Tango',
+    U: 'Uniform',
+    V: 'Victor',
+    W: 'Whiskey',
+    X: 'X-ray',
+    Y: 'Yankee',
+    Z: 'Zulu'
+  };
+
+  if (/^[A-Z]$/.test(d)) return phonetic[d] || d;
+
+  if (/^[A-Z][0-9]+$/.test(d)) {
+    const letter = phonetic[d[0]] || d[0];
+    const nums = d
+      .slice(1)
+      .split('')
+      .map(ch => DIGIT_WORDS[ch] || ch)
+      .join(' ');
+
+    return `${letter} ${nums}`;
+  }
+
+  if (/^[A-Z]_[A-Z0-9]+$/.test(d)) {
+    return phonetic[d.split('_')[0]] || d.split('_')[0];
+  }
+
+  return d;
+}
+
 function readCsv(filename) {
   const filePath = path.join(DATA_DIR, filename);
 
@@ -363,7 +864,10 @@ function readCsv(filename) {
 
 function parseCsv(text) {
   const rows = [];
-  const lines = String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/).filter(Boolean);
+  const lines = String(text || '')
+    .replace(/^\uFEFF/, '')
+    .split(/\r?\n/)
+    .filter(line => line.trim().length > 0);
 
   if (!lines.length) return rows;
 
@@ -482,4 +986,20 @@ function haversineNm(lat1, lon1, lat2, lon2) {
       Math.sin(dLon / 2) ** 2;
 
   return earthRadiusNm * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function pushMapArray(map, key, value) {
+  const k = norm(key);
+
+  if (!k) return;
+
+  if (!map.has(k)) {
+    map.set(k, []);
+  }
+
+  map.get(k).push(value);
+}
+
+function unique(list) {
+  return [...new Set(list.filter(Boolean))];
 }
