@@ -1,126 +1,124 @@
-const DIGIT_WORDS = {
-  zero: '0',
-  oh: '0',
-  one: '1',
-  won: '1',
-  two: '2',
-  too: '2',
-  to: '2',
-  three: '3',
-  tree: '3',
-  four: '4',
-  for: '4',
-  five: '5',
-  fife: '5',
-  six: '6',
-  seven: '7',
-  eight: '8',
-  ate: '8',
-  nine: '9',
-  niner: '9'
+// src/utils/aviationSttNormalizer.js
+// SkyEcho aviation STT cleanup layer.
+// Goal: convert weak Vosk/Discord transcripts into aviation-safe intent text
+// before the ATC engine or readback validator sees it.
+
+const NATO = {
+  A: 'Alpha', B: 'Bravo', C: 'Charlie', D: 'Delta', E: 'Echo', F: 'Foxtrot',
+  G: 'Golf', H: 'Hotel', I: 'India', J: 'Juliet', K: 'Kilo', L: 'Lima',
+  M: 'Mike', N: 'November', O: 'Oscar', P: 'Papa', Q: 'Quebec', R: 'Romeo',
+  S: 'Sierra', T: 'Tango', U: 'Uniform', V: 'Victor', W: 'Whiskey',
+  X: 'X-ray', Y: 'Yankee', Z: 'Zulu'
 };
 
-const NUMBER_WORDS = {
-  zero: 'zero',
-  oh: 'zero',
-  one: 'one',
-  won: 'one',
-  two: 'two',
-  too: 'two',
-  to: 'two',
-  three: 'three',
-  tree: 'three',
-  four: 'four',
-  for: 'four',
-  five: 'five',
-  fife: 'five',
-  six: 'six',
-  seven: 'seven',
-  eight: 'eight',
-  ate: 'eight',
-  nine: 'niner',
-  niner: 'niner'
+const DIGIT_SPOKEN = {
+  '0': 'zero',
+  '1': 'one',
+  '2': 'two',
+  '3': 'three',
+  '4': 'four',
+  '5': 'five',
+  '6': 'six',
+  '7': 'seven',
+  '8': 'eight',
+  '9': 'niner'
+};
+
+const DIGIT_FROM_WORD = {
+  zero: '0', oh: '0', o: '0',
+  one: '1', won: '1',
+  two: '2', too: '2', to: '2',
+  three: '3', tree: '3',
+  four: '4', for: '4', fore: '4',
+  five: '5', fife: '5',
+  six: '6',
+  seven: '7',
+  eight: '8', ate: '8',
+  nine: '9', niner: '9'
 };
 
 const AIRLINE_SPOKEN = {
-  AAL: 'American',
-  AA: 'American',
-  AMERICAN: 'American',
-
-  JBU: 'JetBlue',
-  B6: 'JetBlue',
-  JETBLUE: 'JetBlue',
-
-  DAL: 'Delta',
-  DL: 'Delta',
-  DELTA: 'Delta',
-
-  UAL: 'United',
-  UA: 'United',
-  UNITED: 'United',
-
-  SWA: 'Southwest',
-  WN: 'Southwest',
-  SOUTHWEST: 'Southwest',
-
-  BAW: 'Speedbird',
-  BA: 'Speedbird',
-  SPEEDBIRD: 'Speedbird',
-
-  VIR: 'Virgin',
-  VS: 'Virgin',
-  VIRGIN: 'Virgin',
-
+  AAL: 'American', AA: 'American', AMERICAN: 'American',
+  JBU: 'JetBlue', B6: 'JetBlue', JETBLUE: 'JetBlue',
+  DAL: 'Delta', DL: 'Delta', DELTA: 'Delta',
+  UAL: 'United', UA: 'United', UNITED: 'United',
+  SWA: 'Southwest', WN: 'Southwest', SOUTHWEST: 'Southwest',
+  BAW: 'Speedbird', BA: 'Speedbird', SPEEDBIRD: 'Speedbird',
+  VIR: 'Virgin', VS: 'Virgin', VIRGIN: 'Virgin',
+  BWA: 'Caribbean', CARIBBEAN: 'Caribbean',
+  IWY: 'InterCaribbean', INTERCARIBBEAN: 'InterCaribbean',
+  WIA: 'Winair', WINAIR: 'Winair',
+  SVG: 'SVG Air',
+  TJB: 'Tradewind',
   LIAT: 'LIAT',
-  WINAIR: 'Winair',
-  WINAIR: 'Winair',
-  CARIBBEAN: 'Caribbean',
-  BWA: 'Caribbean',
-  INTERCARIBBEAN: 'InterCaribbean'
+  SKY: 'SkyEcho'
 };
 
 export function normalizeAviationStt(rawText, context = {}) {
-  const originalRaw = String(rawText || '');
+  const original = String(rawText || '').trim();
 
-  let text = originalRaw
+  let text = original
     .toLowerCase()
     .replace(/[^\w\s.]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
-  const contextCallsign = context.callsign || '';
-  const contextSpokenCallsign =
-    context.spokenCallsign && !looksLikeRawCallsign(context.spokenCallsign)
-      ? context.spokenCallsign
-      : speakCallsign(contextCallsign);
-
-  const runway = String(context.runway || '07')
-    .replace(/^0?/, '')
-    .padStart(2, '0');
+  const contextCallsign = context.callsign || context.flightNumber || context.syncId || '';
+  const activeCallsign = detectHeardCallsign(text, context) || speakCallsign(contextCallsign);
+  const runway = normalizeRunway(context.runway || context?.assigned?.runway || '07');
 
   text = normalizeCommonVoskMistakes(text);
-
-  const heardCallsign = detectHeardCallsign(text, context);
-  const activeCallsign = heardCallsign || contextSpokenCallsign || '';
-
+  text = normalizeAviationWords(text);
   text = normalizeCallsign(text, activeCallsign);
-  text = normalizeIfrClearance(text, context, activeCallsign);
-  text = normalizePushback(text, context, activeCallsign);
-  text = normalizeTaxi(text, context, activeCallsign);
+
+  // Intent-level cleanup. These intentionally return canonical pilot phrases.
+  text = normalizeClearanceRequest(text, context, activeCallsign);
+  text = normalizePushbackRequest(text, context, activeCallsign);
+  text = normalizeTaxiRequest(text, context, activeCallsign);
   text = normalizeDepartureReady(text, runway, context, activeCallsign);
-  text = normalizeReadbacks(text, context, activeCallsign);
-  text = normalizeFlightLevels(text, context);
-  text = normalizeSquawk(text);
-  text = normalizeFrequencies(text);
+  text = normalizeAirborneCheckin(text, context, activeCallsign);
+  text = normalizeMaintaining(text, context, activeCallsign);
+  text = normalizeDescentApproachLanding(text, context, activeCallsign);
 
-  text = text
-    .replace(/\s+/g, ' ')
-    .trim();
+  // Readback cleanup. Preserve content, but make numbers/frequencies/routes recognizable.
+  text = normalizeReadbackPhraseology(text, context, activeCallsign);
 
-  return text || originalRaw;
+  text = text.replace(/\s+/g, ' ').trim();
+  return text || original;
 }
 
 export default normalizeAviationStt;
+
+export function normalizeForReadbackCompare(value) {
+  let text = String(value || '')
+    .toLowerCase()
+    .replace(/[^\w\s.]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  text = normalizeCommonVoskMistakes(text);
+  text = normalizeAviationWords(text);
+
+  text = text
+    .replace(/\bdecimal\b/g, ' point ')
+    .replace(/\bflight level\b/g, ' fl ')
+    .replace(/\brunway\b/g, ' rwy ')
+    .replace(/\bzero seven\b/g, ' 07 ')
+    .replace(/\bone zero\b/g, ' 10 ')
+    .replace(/\bone six thousand\b/g, '16000')
+    .replace(/\bone five thousand\b/g, '15000')
+    .replace(/\bthree one zero\b/g, '310')
+    .replace(/\btree one zero\b/g, '310')
+    .replace(/\bone one nine point six zero\b/g, '119.60')
+    .replace(/\bone one nine decimal six zero\b/g, '119.60')
+    .replace(/\bone nineteen decimal sixty\b/g, '119.60')
+    .replace(/\bsierra kilo bravo\b/g, 'skb')
+    .replace(/\balpha november uniform\b/g, 'anu');
+
+  text = collapseDigitWords(text);
+
+  return text.replace(/\s+/g, ' ').trim();
+}
 
 function normalizeCommonVoskMistakes(text) {
   return text
@@ -137,6 +135,7 @@ function normalizeCommonVoskMistakes(text) {
     .replace(/\bfull requests\b/g, 'request')
     .replace(/\brequests a\b/g, 'request')
     .replace(/\brequests i\b/g, 'request i')
+    .replace(/\bbequest\b/g, 'request')
     .replace(/\bclarence\b/g, 'clearance')
     .replace(/\bclear ants\b/g, 'clearance')
     .replace(/\bpatcher\b/g, 'departure')
@@ -179,6 +178,122 @@ function normalizeCommonVoskMistakes(text) {
     .replace(/\blet the my name\b/g, 'liat three one nine');
 }
 
+function normalizeAviationWords(text) {
+  return text
+    .replace(/\bniner\b/g, 'nine')
+    .replace(/\btree\b/g, 'three')
+    .replace(/\bfife\b/g, 'five')
+    .replace(/\boh\b/g, 'zero');
+}
+
+function normalizeClearanceRequest(text, context, activeCallsign) {
+  if (
+    /\brequest\b.*\bifr\b.*\bclearance\b/.test(text) ||
+    /\brequest\b.*\bclearance\b/.test(text) ||
+    /\bifr clearance\b/.test(text)
+  ) {
+    return ensureCallsign('request IFR clearance', text, context, activeCallsign);
+  }
+  return text;
+}
+
+function normalizePushbackRequest(text, context, activeCallsign) {
+  if (/\brequest\b.*\bpushback\b|\bpushback\b|\bpush back\b|\bstart\b/.test(text)) {
+    return ensureCallsign('request pushback and start', text, context, activeCallsign);
+  }
+  return text;
+}
+
+function normalizeTaxiRequest(text, context, activeCallsign) {
+  if (/\bready\b.*\btaxi\b|\btaxi\b.*\bready\b|\bready to taxi\b|\brequest taxi\b/.test(text)) {
+    return ensureCallsign('ready to taxi', text, context, activeCallsign);
+  }
+  return text;
+}
+
+function normalizeDepartureReady(text, runway, context, activeCallsign) {
+  const hasHoldShort =
+    /\bhold short\b/.test(text) ||
+    /\bholding short\b/.test(text) ||
+    /\bshort\b.*\brunway\b/.test(text);
+
+  const hasReadyDeparture =
+    /\bready\b.*\bdeparture\b/.test(text) ||
+    /\bready\b.*\btakeoff\b/.test(text) ||
+    /\bready\b.*\bdepart\b/.test(text);
+
+  if (hasHoldShort || hasReadyDeparture) {
+    return ensureCallsign(
+      `holding short runway ${speakRunway(runway)} ready for departure`,
+      text,
+      context,
+      activeCallsign
+    );
+  }
+
+  return text;
+}
+
+function normalizeAirborneCheckin(text, context, activeCallsign) {
+  if (
+    /\bwith you\b/.test(text) ||
+    /\bdeparture\b.*\bpassing\b/.test(text) ||
+    /\bairborne\b/.test(text) ||
+    /\bpassing\b.*\bfor\b/.test(text)
+  ) {
+    if (/\brequest\b|\bclearance\b|\btaxi\b|\bpushback\b/.test(text)) return text;
+    return ensureCallsign(text, text, context, activeCallsign);
+  }
+  return text;
+}
+
+function normalizeMaintaining(text, context, activeCallsign) {
+  if (/\bmaintaining\b|\blevel\b|\bflight level\b|\bclimbing\b|\bdescending\b/.test(text)) {
+    if (/\brequest\b|\bclearance\b|\btaxi\b|\bpushback\b/.test(text)) return text;
+    return ensureCallsign(text, text, context, activeCallsign);
+  }
+  return text;
+}
+
+function normalizeDescentApproachLanding(text, context, activeCallsign) {
+  if (/\brequest\b.*\bdescent\b|\bready\b.*\bdescent\b|\brequest descend\b/.test(text)) {
+    return ensureCallsign('request descent', text, context, activeCallsign);
+  }
+
+  if (/\brequest\b.*\bapproach\b|\bready\b.*\bapproach\b|\bils\b|\bvisual\b/.test(text)) {
+    return ensureCallsign('request approach', text, context, activeCallsign);
+  }
+
+  if (/\bfinal\b|\blanding clearance\b|\bcleared to land\b/.test(text)) {
+    return ensureCallsign('final runway ' + speakRunway(context.runway || '07'), text, context, activeCallsign);
+  }
+
+  return text;
+}
+
+function normalizeReadbackPhraseology(text, context, activeCallsign) {
+  text = text
+    .replace(/\bclear destination\b/g, 'cleared to destination')
+    .replace(/\bcreate a destination\b/g, 'cleared to destination')
+    .replace(/\bclear to destination\b/g, 'cleared to destination')
+    .replace(/\bfiled to maintain\b/g, 'climb and maintain')
+    .replace(/\bone nineteen decimal sixty\b/g, 'one one nine decimal six zero')
+    .replace(/\bone nineteen six zero\b/g, 'one one nine decimal six zero');
+
+  const cruise = String(context.cruise || context?.assigned?.initialAltitude || '').trim();
+  if (/^\d{4,5}$/.test(cruise)) {
+    text = text
+      .replace(/\bflight level to you\b/g, altitudeToWords(cruise))
+      .replace(/\bflight level two you\b/g, altitudeToWords(cruise));
+  }
+
+  if (activeCallsign && isPilotLike(text) && !startsWithCallsign(text, activeCallsign)) {
+    return ensureCallsign(text, text, context, activeCallsign);
+  }
+
+  return text;
+}
+
 function normalizeCallsign(text, activeCallsign) {
   if (!activeCallsign) return text;
 
@@ -192,10 +307,9 @@ function normalizeCallsign(text, activeCallsign) {
     /\bliat\b/.test(text) ||
     /\bthree one nine\b/.test(text) ||
     /\b319\b/.test(text) ||
-    /\bone nine\b/.test(text) ||
     /\bsky\b/.test(text);
 
-  if (!hasLikelyCallsign && isPilotRequest(text)) {
+  if (!hasLikelyCallsign && isPilotLike(text)) {
     return `${lowerActive} ${text}`;
   }
 
@@ -206,171 +320,33 @@ function normalizeCallsign(text, activeCallsign) {
     .replace(/\bthree zero eight four\b/g, lowerActive)
     .replace(/\bliat\s*319\b/g, lowerActive)
     .replace(/\bliat three one nine\b/g, lowerActive)
-    .replace(/\bliat one nine\b/g, lowerActive)
     .replace(/\bthree one nine\b/g, lowerActive);
 }
 
-function normalizeIfrClearance(text, context = {}, activeCallsign = '') {
-  if (
-    /\brequest\b.*\bifr\b.*\bclearance\b/.test(text) ||
-    /\brequest\b.*\bclearance\b/.test(text) ||
-    /\bifr clearance\b/.test(text)
-  ) {
-    const intent = 'request IFR clearance';
-    return ensureCallsign(intent, text, context, activeCallsign);
-  }
+function ensureCallsign(intent, originalText, context = {}, activeCallsign = '') {
+  const heard = detectHeardCallsign(originalText, context);
+  const contextCallsign = activeCallsign || speakCallsign(context.callsign || '');
+  const callsign = heard || contextCallsign || '';
 
-  return text;
-}
+  if (!callsign) return intent;
+  if (startsWithCallsign(intent, callsign)) return intent;
 
-function normalizePushback(text, context = {}, activeCallsign = '') {
-  if (/\bpushback\b|\bpush back\b|\bstart\b/.test(text)) {
-    return ensureCallsign('request pushback and start', text, context, activeCallsign);
-  }
-
-  return text;
-}
-
-function normalizeTaxi(text, context = {}, activeCallsign = '') {
-  if (/\bready\b.*\btaxi\b|\btaxi\b.*\bready\b|\bready to taxi\b/.test(text)) {
-    return ensureCallsign('ready to taxi', text, context, activeCallsign);
-  }
-
-  return text;
-}
-
-function normalizeDepartureReady(text, runway, context = {}, activeCallsign = '') {
-  const hasHoldShort =
-    /\bhold short\b/.test(text) ||
-    /\bholding short\b/.test(text) ||
-    /\bshort\b.*\brunway\b/.test(text);
-
-  const hasReadyDeparture =
-    /\bready\b.*\bdeparture\b/.test(text) ||
-    /\bready\b.*\btakeoff\b/.test(text) ||
-    /\bready\b.*\bdepart\b/.test(text);
-
-  if (hasHoldShort || hasReadyDeparture) {
-    const spokenRunway =
-      runway === '07'
-        ? 'zero seven'
-        : runway
-            .split('')
-            .map(d => (d === '0' ? 'zero' : NUMBER_WORDS[d] || d))
-            .join(' ');
-
-    return ensureCallsign(
-      `holding short runway ${spokenRunway} ready for departure`,
-      text,
-      context,
-      activeCallsign
-    );
-  }
-
-  return text;
-}
-
-function normalizeReadbacks(text, context = {}, activeCallsign = '') {
-  const route = String(context.route || '').toLowerCase();
-  const cruise = String(context.cruise || '').toLowerCase();
-
-  if (/\bcleared\b|\bsquawk\b|\bflight level\b|\bdeparture frequency\b/.test(text)) {
-    text = text
-      .replace(/\bclear destination\b/g, 'cleared to destination')
-      .replace(/\bcreate a destination\b/g, 'cleared to destination')
-      .replace(/\bclear to destination\b/g, 'cleared to destination')
-      .replace(/\bfiled to maintain\b/g, 'climb and maintain')
-      .replace(/\bmaintain flight level to you\b/g, `maintain ${cruise || 'flight level three one zero'}`);
-  }
-
-  if (route.includes('g633')) {
-    text = text.replace(/\bgo sixty to be\b/g, 'g six three three');
-  }
-
-  if (activeCallsign && isPilotRequest(text) && !startsWithCallsign(text, activeCallsign)) {
-    return ensureCallsign(text, text, context, activeCallsign);
-  }
-
-  return text;
-}
-
-function normalizeFlightLevels(text, context = {}) {
-  const cruise = String(context.cruise || '').trim();
-
-  if (/^\d{4,5}$/.test(cruise)) {
-    const altitudeWords = altitudeToWords(cruise);
-    text = text.replace(/\bflight level to you\b/g, altitudeWords);
-    text = text.replace(/\bflight level two you\b/g, altitudeWords);
-  }
-
-  return text
-    .replace(/\bflight level tree one zero\b/g, 'flight level three one zero')
-    .replace(/\bfl three one zero\b/g, 'flight level three one zero')
-    .replace(/\bfl tree one zero\b/g, 'flight level three one zero')
-    .replace(/\bfl310\b/g, 'flight level three one zero');
-}
-
-function normalizeSquawk(text) {
-  return text
-    .replace(/\bsquawk gone to zero four six\b/g, 'squawk zero four six')
-    .replace(/\bsquawk go on to zero four six\b/g, 'squawk zero four six');
-}
-
-function normalizeFrequencies(text) {
-  return text
-    .replace(/\bone one nine decimal six zero\b/g, 'one one nine decimal six zero')
-    .replace(/\bone nineteen decimal sixty\b/g, 'one one nine decimal six zero')
-    .replace(/\bone nineteen six zero\b/g, 'one one nine decimal six zero');
-}
-
-function ensureCallsign(normalizedIntent, originalText, context = {}, activeCallsign = '') {
-  const heardCallsign = detectHeardCallsign(originalText, context);
-
-  const contextCallsign =
-    activeCallsign ||
-    heardCallsign ||
-    (
-      context.spokenCallsign && !looksLikeRawCallsign(context.spokenCallsign)
-        ? context.spokenCallsign
-        : speakCallsign(context.callsign || '')
-    );
-
-  const callsign = heardCallsign || contextCallsign || '';
-
-  if (!callsign) return normalizedIntent;
-
-  if (startsWithCallsign(normalizedIntent, callsign)) {
-    return normalizedIntent;
-  }
-
-  return `${callsign} ${normalizedIntent}`;
+  return `${callsign} ${intent}`;
 }
 
 function detectHeardCallsign(text, context = {}) {
   const clean = String(text || '').toLowerCase();
 
-  if (
-    /\bamerican\b/.test(clean) ||
-    /\baal\b/.test(clean) ||
-    /\bthree zero eight four\b/.test(clean) ||
-    /\b3084\b/.test(clean)
-  ) {
+  if (/\bamerican\b|\baal\b|\bthree zero eight four\b|\b3084\b/.test(clean)) {
     return 'American three zero eight four';
   }
 
-  if (
-    /\bjetblue\b/.test(clean) ||
-    /\bjbu\b/.test(clean)
-  ) {
+  if (/\bjetblue\b|\bjbu\b/.test(clean)) {
     const digits = detectDigitSequence(clean);
     return digits ? `JetBlue ${digitsToWords(digits)}` : 'JetBlue';
   }
 
-  if (
-    /\bliat\b/.test(clean) ||
-    /\bthree one nine\b/.test(clean) ||
-    /\b319\b/.test(clean)
-  ) {
+  if (/\bliat\b|\bthree one nine\b|\b319\b/.test(clean)) {
     return 'LIAT three one nine';
   }
 
@@ -381,56 +357,41 @@ function detectHeardCallsign(text, context = {}) {
   return '';
 }
 
-function startsWithCallsign(text, callsign) {
-  return String(text || '')
-    .toLowerCase()
-    .startsWith(String(callsign || '').toLowerCase());
-}
-
-function isPilotRequest(text) {
-  return /\brequest\b|\bready\b|\btaxi\b|\bpushback\b|\bpush back\b|\bclearance\b|\bholding short\b|\bhold short\b/.test(text);
-}
-
-function looksLikeRawCallsign(value) {
-  const v = String(value || '').trim();
-  return /^[A-Z]{2,4}\s*\d+$/i.test(v);
-}
-
 function speakCallsign(callsign) {
-  const raw = String(callsign || '')
-    .toUpperCase()
-    .replace(/\s+/g, '');
-
+  const raw = String(callsign || '').toUpperCase().replace(/\s+/g, '');
   if (!raw) return '';
 
   const airlineRaw = raw.match(/^[A-Z]+/)?.[0] || '';
-  const numbers = raw.match(/\d+/)?.[0] || '';
+  const number = raw.match(/\d+/)?.[0] || '';
 
   const airline = AIRLINE_SPOKEN[airlineRaw] || airlineRaw || '';
+  if (!number) return airline;
 
-  if (!numbers) return airline;
+  return `${airline} ${digitsToWords(number)}`.trim();
+}
 
-  return `${airline} ${digitsToWords(numbers)}`.trim();
+function normalizeRunway(runway) {
+  const r = String(runway || '07').toUpperCase().replace(/^RWY\s*/, '').replace(/[^\dLRC]/g, '');
+  const digits = r.match(/\d+/)?.[0] || '07';
+  const suffix = r.match(/[LRC]$/)?.[0] || '';
+  return `${digits.padStart(2, '0')}${suffix}`;
+}
+
+function speakRunway(runway) {
+  const r = normalizeRunway(runway);
+  const digits = r.match(/\d+/)?.[0] || '07';
+  const suffix = r.match(/[LRC]$/)?.[0] || '';
+
+  const suffixWord =
+    suffix === 'L' ? ' left' :
+    suffix === 'R' ? ' right' :
+    suffix === 'C' ? ' center' : '';
+
+  return `${digitsToWords(digits)}${suffixWord}`;
 }
 
 function digitsToWords(value) {
-  const digitWords = {
-    0: 'zero',
-    1: 'one',
-    2: 'two',
-    3: 'three',
-    4: 'four',
-    5: 'five',
-    6: 'six',
-    7: 'seven',
-    8: 'eight',
-    9: 'niner'
-  };
-
-  return String(value)
-    .split('')
-    .map(d => digitWords[d] || d)
-    .join(' ');
+  return String(value).split('').map(d => DIGIT_SPOKEN[d] || d).join(' ');
 }
 
 function detectDigitSequence(text) {
@@ -439,22 +400,60 @@ function detectDigitSequence(text) {
 
   const words = String(text).split(/\s+/);
   const digits = [];
-
   for (const word of words) {
-    if (DIGIT_WORDS[word]) digits.push(DIGIT_WORDS[word]);
+    if (DIGIT_FROM_WORD[word]) digits.push(DIGIT_FROM_WORD[word]);
   }
 
   return digits.length >= 2 ? digits.join('') : '';
 }
 
-function altitudeToWords(value) {
-  const n = Number(value);
+function collapseDigitWords(text) {
+  const words = String(text || '').split(/\s+/);
+  const out = [];
 
+  for (let i = 0; i < words.length; i++) {
+    if (!DIGIT_FROM_WORD[words[i]]) {
+      out.push(words[i]);
+      continue;
+    }
+
+    const digits = [];
+    let j = i;
+
+    while (j < words.length && DIGIT_FROM_WORD[words[j]]) {
+      digits.push(DIGIT_FROM_WORD[words[j]]);
+      j++;
+    }
+
+    if (digits.length >= 2) {
+      out.push(digits.join(''));
+      i = j - 1;
+    } else {
+      out.push(words[i]);
+    }
+  }
+
+  return out.join(' ');
+}
+
+function altitudeToWords(value) {
+  const n = Number(String(value || '').replace(/[^\d]/g, ''));
   if (!Number.isFinite(n)) return String(value);
 
-  if (n === 16000) return 'one six thousand';
-  if (n === 15000) return 'one five thousand';
-  if (n === 10000) return 'one zero thousand';
+  if (n >= 18000) return `flight level ${digitsToWords(String(Math.round(n / 100)))}`;
 
-  return digitsToWords(String(value));
+  if (n % 1000 === 0) {
+    const thousands = n / 1000;
+    return `${digitsToWords(String(thousands))} thousand`;
+  }
+
+  return digitsToWords(String(n));
+}
+
+function startsWithCallsign(text, callsign) {
+  return String(text || '').toLowerCase().startsWith(String(callsign || '').toLowerCase());
+}
+
+function isPilotLike(text) {
+  return /\brequest\b|\bready\b|\btaxi\b|\bpushback\b|\bpush back\b|\bclearance\b|\bholding short\b|\bhold short\b|\bcleared\b|\bsquawk\b|\bmaintain\b|\bflight level\b|\bdeparture frequency\b|\bcontact\b/.test(text);
 }
