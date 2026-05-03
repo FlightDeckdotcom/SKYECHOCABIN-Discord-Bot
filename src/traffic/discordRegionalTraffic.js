@@ -1,7 +1,6 @@
 // src/traffic/discordRegionalTraffic.js
 // SkyEcho Discord Regional AI Traffic
 // Discord/Xbox traffic that follows the active SkyEchoCabin session.
-// It uses the active session airports, route, runway, controller/frequency, and phase.
 // Browser app AI traffic stays separate. This file is for Discord/Xbox radio traffic.
 
 const CARIBBEAN_AIRPORTS = new Set([
@@ -74,17 +73,6 @@ const DIGITS = [
 
 const activeLoops = new Map();
 
-/**
- * Starts automatic regional traffic for one Discord guild/session.
- *
- * Required from discordBot.js:
- * startDiscordTrafficLoop({
- *   guildId,
- *   sessionId,
- *   speakToGuild,
- *   getSession
- * });
- */
 export function startDiscordTrafficLoop({
   guildId,
   sessionId,
@@ -137,8 +125,10 @@ export function startDiscordTrafficLoop({
 
   activeLoops.set(guildId, state);
 
-  const firstDelay = randomInt(18000, 45000);
+  const firstDelay = randomInt(12000, 28000);
   state.timer = setTimeout(() => runTrafficTick(guildId), firstDelay);
+
+  console.log(`[DiscordTraffic] First automatic traffic in ${Math.round(firstDelay / 1000)} seconds`);
 
   return { ok: true, sessionId, guildId, firstDelay };
 }
@@ -167,9 +157,7 @@ export function getDiscordTrafficLoopStatus(guildId) {
   const state = activeLoops.get(guildId);
 
   if (!state) {
-    return {
-      running: false
-    };
+    return { running: false };
   }
 
   return {
@@ -214,7 +202,7 @@ async function runTrafficTick(guildId) {
     console.log(`[DiscordTraffic] PILOT: ${tx.pilotText}`);
     await state.speakToGuild(guildId, withTrafficTone(tx.pilotText, tx.emotion, 'pilot'), 'traffic');
 
-    await wait(randomInt(1200, 2600));
+    await wait(randomInt(550, 1100));
 
     console.log(`[DiscordTraffic] ATC: ${tx.atcText}`);
     await state.speakToGuild(guildId, withTrafficTone(tx.atcText, tx.emotion, 'atc'), 'atc');
@@ -318,10 +306,10 @@ export function getTrafficLoopIntervalMs(session = {}) {
   const densityRaw = session?.trafficDensity ?? process.env.TRAFFIC_DENSITY_DEFAULT ?? 2;
   const density = normalizeDensity(densityRaw);
 
-  if (density >= 4) return randomInt(30000, 60000);
-  if (density >= 3) return randomInt(45000, 85000);
-  if (density >= 2) return randomInt(65000, 120000);
-  return randomInt(110000, 190000);
+  if (density >= 4) return randomInt(22000, 42000);
+  if (density >= 3) return randomInt(35000, 65000);
+  if (density >= 2) return randomInt(55000, 95000);
+  return randomInt(90000, 160000);
 }
 
 export function shouldRunDiscordTraffic(session = {}) {
@@ -592,39 +580,7 @@ function pickAltitudeForPhase(phase, session) {
 }
 
 function withTrafficTone(text, emotion, role) {
-  const clean = String(text || '').trim();
-
-  if (!clean) return clean;
-
-  if (String(process.env.DISCORD_VHF_FX || 'true').toLowerCase() === 'false') {
-    return clean;
-  }
-
-  const prefix = role === 'atc'
-    ? pick([
-        'Radio check.',
-        'SkyEcho transmission.',
-        ''
-      ])
-    : pick([
-        '',
-        ''
-      ]);
-
-  const suffix = pick([
-    '',
-    ''
-  ]);
-
-  const emotionHint = emotion
-    ? ` ${clean}`
-    : clean;
-
-  return [prefix, emotionHint, suffix]
-    .filter(Boolean)
-    .join(' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return String(text || '').trim();
 }
 
 function guessRunway(session) {
