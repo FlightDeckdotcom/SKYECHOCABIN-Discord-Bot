@@ -77,7 +77,8 @@ export function startDiscordTrafficLoop({
   guildId,
   sessionId,
   speakToGuild,
-  getSession
+  getSession,
+  isRadioBusy
 }) {
   if (!guildId || !sessionId || typeof speakToGuild !== 'function' || typeof getSession !== 'function') {
     console.warn('[DiscordTraffic] Cannot start loop. Missing guildId/sessionId/speakToGuild/getSession.');
@@ -116,6 +117,7 @@ export function startDiscordTrafficLoop({
     sessionId,
     speakToGuild,
     getSession,
+    isRadioBusy,
     timer: null,
     busy: false,
     stopped: false,
@@ -190,8 +192,12 @@ async function runTrafficTick(guildId) {
       return;
     }
 
-    if (state.busy) {
-      scheduleNextTrafficTick(state, session);
+    if (
+      state.busy ||
+      (typeof state.isRadioBusy === 'function' && state.isRadioBusy(guildId, 'traffic'))
+    ) {
+      console.log('[DiscordTraffic] Frequency busy, delaying traffic transmission.');
+      state.timer = setTimeout(() => runTrafficTick(guildId), randomInt(4500, 9000));
       return;
     }
 
@@ -200,12 +206,27 @@ async function runTrafficTick(guildId) {
     const tx = createRegionalTrafficTransmission(session);
 
     console.log(`[DiscordTraffic] PILOT: ${tx.pilotText}`);
-    await state.speakToGuild(guildId, withTrafficTone(tx.pilotText, tx.emotion, 'pilot'), 'traffic');
+    await state.speakToGuild(
+      guildId,
+      withTrafficTone(tx.pilotText, tx.emotion, 'pilot'),
+      'traffic'
+    );
 
-    await wait(randomInt(550, 1100));
+    await wait(randomInt(450, 850));
+
+    if (typeof state.isRadioBusy === 'function' && state.isRadioBusy(guildId, 'traffic')) {
+      console.log('[DiscordTraffic] User/ATC became busy before traffic ATC reply. Delaying ATC reply.');
+      state.busy = false;
+      state.timer = setTimeout(() => runTrafficTick(guildId), randomInt(4000, 8000));
+      return;
+    }
 
     console.log(`[DiscordTraffic] ATC: ${tx.atcText}`);
-    await state.speakToGuild(guildId, withTrafficTone(tx.atcText, tx.emotion, 'atc'), 'atc');
+    await state.speakToGuild(
+      guildId,
+      withTrafficTone(tx.atcText, tx.emotion, 'atc'),
+      'atc'
+    );
 
     state.count += 1;
     state.busy = false;
