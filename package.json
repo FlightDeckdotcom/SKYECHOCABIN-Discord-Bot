@@ -1,7 +1,7 @@
 {
   "name": "skyecho-discord-bot",
-  "version": "2.4.0",
-  "description": "SkyEcho Discord ATC bot with local Piper TTS support for Render voice playback.",
+  "version": "2.5.0",
+  "description": "SkyEcho Discord ATC bot with FFmpeg-backed Discord voice playback and Piper TTS.",
   "main": "src/index.js",
   "type": "commonjs",
   "scripts": {
