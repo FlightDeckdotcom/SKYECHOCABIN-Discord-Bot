@@ -19,10 +19,11 @@ function connectToVoiceChannel(channel) {
 async function speakATC(guildId, text) {
   console.log('[ATC OUT]', text);
   const player = players.get(guildId);
-  if (!player) return;
+  if (!player) { console.log('[AUDIO] no voice player for guild; run !sky join first'); return; }
   try {
-    const audioPath = await synthesizeSpeech(text);
+    const audioPath = await synthesizeSpeech(text, 'atc');
     if (!audioPath) return;
+    console.log('[AUDIO] playing', audioPath);
     const resource = createAudioResource(audioPath);
     player.play(resource);
     await new Promise(resolve => player.once(AudioPlayerStatus.Idle, resolve));
