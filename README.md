@@ -1,267 +1,173 @@
-# SkyEcho ATC Discord Bridge v1
+# SkyEcho Discord Bot v2.1
 
-Ultra Strict Mode starter build for the architecture:
+GitHub-ready Discord ATC bot folder with a widened ATC intent resolver for bad Vosk/STT output.
 
-```text
-SkyEcho ATC Logic Engine
-  -> Synthetic AI Traffic Layer
-  -> TTS Adapter
-  -> Discord Bot Voice Bridge
-  -> Xbox Discord Voice Channel
-  -> Xbox pilot hears ATC while flying MSFS 2024
+This version fixes the loop where the bot keeps saying `say again request` after radar contact. The ATC engine now uses:
+
+1. STT normalization
+2. Loose ATC phrase matching
+3. Current flight phase/state
+4. Last ATC instruction context
+5. A fallback that asks for altitude/heading/route/request instead of endlessly saying only `say again request`
+
+## Main files
+
+```txt
+src/index.js                    Discord command entry point
+src/discord/voiceManager.js      Discord voice/TTS bridge and transcript handler
+src/atc/intentResolver.js        Widened Vosk/STT intent resolver
+src/atc/responseEngine.js        ATC response builder
+src/atc/sessionStore.js          Per-guild ATC state/session memory
+src/stt/atcGrammar.js            Expanded ATC phrase bank for Vosk grammar
+src/tts/ttsEngine.js             TTS options: ElevenLabs, Piper HTTP, macOS say, or none
+src/testIntents.js               Local test script
 ```
 
-## What is included
-
-- Express backend API
-- Browser test console at `http://localhost:8787`
-- ATC state engine: clearance, pushback, taxi, takeoff, departure, enroute, descent, approach, landing
-- Readback validation using vital-data checks rather than exact string matching
-- Synthetic AI traffic generator
-- Discord slash commands
-- Discord mute/unmute PTT event logging
-- TTS adapters:
-  - `mock` mode: no audio, logs/text only
-  - `piper-http`: expects a Piper HTTP TTS endpoint returning WAV
-  - `elevenlabs`: uses ElevenLabs TTS and caches MP3
-
-## Important v1 limitation
-
-This v1 intentionally does **not** yet capture raw Discord user audio for STT. It logs Discord mute/unmute events so the PTT gate is ready, but pilot input is sent through:
-
-- `/pilot text: ...` Discord slash command, or
-- the browser test console
-
-This keeps the ATC logic, traffic layer, TTS output, and Discord bridge testable before adding voice receive/STT complexity.
-
-## Setup
+## Install
 
 ```bash
 npm install
 cp .env.example .env
 ```
 
-Edit `.env` with your Discord bot credentials.
+Fill in:
 
-Register commands:
-
-```bash
-npm run register
+```env
+DISCORD_TOKEN=your_token_here
 ```
 
-Start server:
+Then run:
 
 ```bash
 npm start
 ```
 
-Open:
+## Test the widened ATC brain first
 
-```text
-http://localhost:8787
+Before connecting full Discord voice receive, run:
+
+```bash
+npm run test:intents
 ```
+
+You should see messy phrases like:
+
+```txt
+maintain in flight label tree for zero
+```
+
+resolve as altitude/flight-level reports instead of unknown requests.
 
 ## Discord commands
 
-```text
-/join
-/leave
-/start_atc callsign:LIAT319 route:TKPK SKB G633 ANU DCT TAPA cruise:FL310
-/pilot text:Clearance, LIAT 319, request IFR clearance to TAPA.
-/traffic
-/repeat_last
+```txt
+!sky join
+!sky say <pilot phrase>
+!sky atc <raw ATC line>
+!sky callsign <callsign>
+!sky phase departure|enroute|descent|approach|tower
+!sky session
+!sky reset
 ```
 
-## Xbox flow
+Example:
 
-1. Start this server on your MacBook or host.
-2. Invite the Discord bot to your server.
-3. Join the Discord voice channel from Xbox.
-4. Use `/join` so the bot joins the same voice channel.
-5. Use `/start_atc`.
-6. Use `/pilot` for v1 testing, or web console PTT/text input.
-7. Bot will speak through Discord once TTS mode returns playable audio.
+```txt
+!sky say maintaining flight label tree for zero
+```
+
+Expected behavior:
+
+```txt
+SkyEcho Seven Three Eight, roger, maintain FL340.
+```
 
 ## TTS modes
 
-### Mock mode
-
-Default. Safe for first run. Does not play audio; it writes cached text files and logs transmissions.
+By default:
 
 ```env
-TTS_MODE=mock
+TTS_MODE=none
 ```
 
-### Piper HTTP mode
+This logs ATC replies without speaking. To speak through Discord voice, use one of these:
 
-```env
-TTS_MODE=piper-http
-PIPER_TTS_URL=http://127.0.0.1:5000/api/tts
-```
-
-The endpoint should accept JSON:
-
-```json
-{ "text": "ATC line here", "role": "atc" }
-```
-
-and return WAV bytes.
-
-### ElevenLabs mode
+### ElevenLabs
 
 ```env
 TTS_MODE=elevenlabs
 ELEVENLABS_API_KEY=your_key
-ELEVENLABS_VOICE_ATC=voice_id
-ELEVENLABS_VOICE_TRAFFIC=voice_id
+ELEVENLABS_VOICE_ID=your_voice_id
+ELEVENLABS_MODEL_ID=eleven_flash_v2_5
 ```
 
-## API endpoints
-
-```text
-GET  /api/health
-POST /api/session
-GET  /api/sessions
-GET  /api/session/:id
-POST /api/session/:id/pilot-text
-POST /api/session/:id/traffic
-POST /api/session/:id/discord-speak
-```
-
-## Next build phase
-
-- Add Discord audio receive pipeline
-- Add STT adapter: Whisper/Deepgram/AssemblyAI
-- Convert mute/unmute state into true audio capture windows
-- Add traffic deconfliction logic so ATC can call out synthetic traffic to the pilot
-- Add SimBrief route import
-- Add frequency/sector voice switching
-
-## v1.2 Discord Voice Receive + STT
-
-This build adds the first real Discord mute/unmute PTT receive pipeline.
-
-Flow:
-
-```text
-Pilot unmutes in Discord = recording starts
-Pilot speaks
-Pilot mutes again = recording stops
-SkyEcho saves a WAV file in ./recordings
-STT transcribes it
-ATC engine processes the transcript
-Discord bot speaks the ATC response back into the voice channel
-```
-
-### STT modes
-
-Keep this while testing text commands only:
+### Piper HTTP
 
 ```env
-STT_MODE=manual
+TTS_MODE=piper_http
+PIPER_HTTP_URL=http://127.0.0.1:5002/synthesize
 ```
 
-Use this to test the PTT pipeline without an API key. The bot will pretend every recording said the text in `STT_MOCK_TEXT`:
+This assumes you have a working Piper HTTP service. This folder does **not** require the broken `piper` executable path.
+
+### macOS say
 
 ```env
-STT_MODE=mock
-STT_MOCK_TEXT=Clearance, LIAT 319, request IFR clearance to TAPA.
+TTS_MODE=system_say
 ```
 
-Use this for real speech-to-text:
+Useful for local Mac testing only.
 
-```env
-STT_MODE=openai-whisper
-OPENAI_API_KEY=your_openai_api_key_here
-OPENAI_STT_MODEL=whisper-1
+## Where your existing Vosk live audio should connect
+
+Your live Vosk output should call this function:
+
+```js
+const { handleTranscript } = require('./src/discord/voiceManager');
+await handleTranscript(guildId, voskTranscript);
 ```
 
-After changing `.env`, stop and restart `npm start`.
+That is the corrected flow:
 
-### Required testing order
-
-1. Start Piper in Terminal 1:
-
-```bash
-npm run piper
+```txt
+Vosk raw text → intentResolver → responseEngine → TTS/Discord voice
 ```
 
-2. Start SkyEcho in Terminal 2:
+Do **not** directly send unrecognized phrases to `say again request` anymore.
 
-```bash
-npm start
+## Important change from older bot
+
+Old strict behavior:
+
+```txt
+Bad STT → unknown → say again request
 ```
 
-3. In Discord, join voice, then run:
+New behavior:
 
-```text
-/join
-/start_atc callsign:LIAT319 route:TKPK SKB G633 ANU DCT TAPA cruise:FL310
-/stt_status
+```txt
+Bad STT → normalize → context match → best ATC intent → useful response
 ```
 
-4. For PTT test, unmute, speak, then mute again. Watch Terminal for:
+After radar contact, the session stays open:
 
-```text
-[VoiceRX] Recording started
-[VoiceRX] Recording saved
-[STT] CaptainKidAk869: ...transcript...
+```js
+expectedPilotAction: 'open_request'
 ```
 
-## v1.3 — Free Hosted STT with Vosk Local
+That allows the pilot to say:
 
-This build adds `STT_MODE=vosk-local`, which lets the SkyEcho hosted backend transcribe Discord pilot audio locally without OpenAI STT credits.
-
-### Install Vosk Python package
-
-```bash
-cd ~/Desktop/skyecho-atc-discord-bridge-v1.3-vosk-local-stt
-python3 -m pip install vosk
+```txt
+proceeding on course
+maintaining flight level three four zero
+request higher
+request lower
+request descent
+request vectors
+request direct
+traffic in sight
+negative contact
+say again
 ```
 
-### Download the default English Vosk model
-
-```bash
-npm run download:vosk-model
-```
-
-Expected model folder:
-
-```text
-./models/vosk-model-small-en-us-0.15
-```
-
-### .env STT section
-
-```env
-STT_MODE=vosk-local
-VOSK_MODEL_PATH=./models/vosk-model-small-en-us-0.15
-PYTHON_BIN=python3
-VOSK_TIMEOUT_MS=20000
-```
-
-### Runtime terminals
-
-Terminal 1 — TTS server:
-
-```bash
-cd ~/Desktop/skyecho-atc-discord-bridge-v1.3-vosk-local-stt
-npm run piper
-```
-
-Terminal 2 — SkyEcho hosted backend and Discord bot:
-
-```bash
-cd ~/Desktop/skyecho-atc-discord-bridge-v1.3-vosk-local-stt
-npm start
-```
-
-### Discord test
-
-```text
-/join
-/start_atc callsign:LIAT319 route:TKPK SKB G633 ANU DCT TAPA cruise:FL310
-/stt_status
-```
-
-Then unmute in Discord, say the clearance request, and mute again. The server will record the audio, run Vosk locally, send the transcript into SkyEcho ATC logic, and speak the answer back through Discord.
+without getting stuck in the loop.
