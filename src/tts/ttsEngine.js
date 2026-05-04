@@ -1,67 +1,55 @@
-import fs from 'fs/promises';
-import path from 'path';
-import crypto from 'crypto';
-import { log, warn } from '../utils/logger.js';
+const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
+const fetch = require('node-fetch');
+const { v4: uuidv4 } = require('uuid');
 
-const cacheDir = path.resolve('public/audio-cache');
+const tmpDir = path.join(process.cwd(), 'tmp');
+if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
 
-export async function synthesizeSpeech({ text, role = 'atc' }) {
-  await fs.mkdir(cacheDir, { recursive: true });
-  const mode = process.env.TTS_MODE || 'mock';
-  if (mode === 'piper-http') return piperHttp(text, role);
-  if (mode === 'elevenlabs') return elevenLabs(text, role);
-  return mockAudio(text, role);
+async function synthesizeSpeech(text) {
+  const mode = (process.env.TTS_MODE || 'none').toLowerCase();
+  if (mode === 'elevenlabs') return synthesizeElevenLabs(text);
+  if (mode === 'piper_http') return synthesizePiperHttp(text);
+  if (mode === 'system_say') return synthesizeSystemSay(text);
+  console.log('[TTS disabled]', text);
+  return null;
 }
 
-async function mockAudio(text, role) {
-  const filename = `mock-${role}-${hash(text)}.txt`;
-  const filepath = path.join(cacheDir, filename);
-  await fs.writeFile(filepath, text, 'utf8');
-  return { mode: 'mock', url: `/audio-cache/${filename}`, text, playable: false };
+async function synthesizeElevenLabs(text) {
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  const voiceId = process.env.ELEVENLABS_VOICE_ID;
+  const modelId = process.env.ELEVENLABS_MODEL_ID || 'eleven_flash_v2_5';
+  if (!apiKey || !voiceId) throw new Error('ElevenLabs API key or voice ID missing.');
+  const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+    method: 'POST',
+    headers: { 'xi-api-key': apiKey, 'Content-Type': 'application/json', Accept: 'audio/mpeg' },
+    body: JSON.stringify({ text, model_id: modelId, voice_settings: { stability: 0.55, similarity_boost: 0.75, style: 0.15, use_speaker_boost: true } })
+  });
+  if (!res.ok) throw new Error(`ElevenLabs TTS failed: ${res.status} ${await res.text()}`);
+  const buffer = await res.buffer();
+  const out = path.join(tmpDir, `${uuidv4()}.mp3`);
+  fs.writeFileSync(out, buffer);
+  return out;
 }
 
-async function piperHttp(text, role) {
-  const url = process.env.PIPER_TTS_URL;
-  if (!url) return mockAudio(text, role);
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), Number(process.env.TTS_TIMEOUT_MS || 15000));
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', accept: 'audio/wav, audio/*' },
-      body: JSON.stringify({ text, role, format: 'wav', sampleRate: 48000 }),
-      signal: controller.signal
-    }).finally(() => clearTimeout(timeout));
-    if (!res.ok) throw new Error(`Piper HTTP ${res.status}`);
-    const buf = Buffer.from(await res.arrayBuffer());
-    const filename = `piper-${role}-${hash(text)}.wav`;
-    await fs.writeFile(path.join(cacheDir, filename), buf);
-    return { mode: 'piper-http', url: `/audio-cache/${filename}`, text, playable: true };
-  } catch (e) {
-    warn('TTS', `Piper failed, using mock: ${e.message}`);
-    return mockAudio(text, role);
-  }
+async function synthesizePiperHttp(text) {
+  const url = process.env.PIPER_HTTP_URL;
+  if (!url) throw new Error('PIPER_HTTP_URL missing.');
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) });
+  if (!res.ok) throw new Error(`Piper HTTP failed: ${res.status} ${await res.text()}`);
+  const buffer = await res.buffer();
+  const out = path.join(tmpDir, `${uuidv4()}.wav`);
+  fs.writeFileSync(out, buffer);
+  return out;
 }
 
-async function elevenLabs(text, role) {
-  const key = process.env.ELEVENLABS_API_KEY;
-  const voice = role === 'traffic' ? process.env.ELEVENLABS_VOICE_TRAFFIC : process.env.ELEVENLABS_VOICE_ATC;
-  if (!key || !voice) return mockAudio(text, role);
-  try {
-    const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voice}`, {
-      method: 'POST',
-      headers: { 'xi-api-key': key, 'content-type': 'application/json', accept: 'audio/mpeg' },
-      body: JSON.stringify({ text, model_id: 'eleven_flash_v2_5', voice_settings: { stability: 0.55, similarity_boost: 0.75 } })
-    });
-    if (!res.ok) throw new Error(`ElevenLabs HTTP ${res.status}`);
-    const buf = Buffer.from(await res.arrayBuffer());
-    const filename = `el-${role}-${hash(text)}.mp3`;
-    await fs.writeFile(path.join(cacheDir, filename), buf);
-    return { mode: 'elevenlabs', url: `/audio-cache/${filename}`, text, playable: true };
-  } catch (e) {
-    warn('TTS', `ElevenLabs failed, using mock: ${e.message}`);
-    return mockAudio(text, role);
-  }
+function synthesizeSystemSay(text) {
+  return new Promise((resolve, reject) => {
+    const out = path.join(tmpDir, `${uuidv4()}.aiff`);
+    const child = spawn('say', ['-o', out, text]);
+    child.on('close', code => code === 0 ? resolve(out) : reject(new Error(`macOS say failed with code ${code}`)));
+  });
 }
 
-function hash(text) { return crypto.createHash('sha1').update(text).digest('hex').slice(0, 16); }
+module.exports = { synthesizeSpeech };
