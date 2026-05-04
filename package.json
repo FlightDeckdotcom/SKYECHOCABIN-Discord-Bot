@@ -1,13 +1,14 @@
 {
   "name": "skyecho-discord-bot",
-  "version": "2.1.0",
-  "description": "SkyEcho Discord ATC bot with widened Vosk STT intent resolver and ATC state engine.",
+  "version": "2.4.0",
+  "description": "SkyEcho Discord ATC bot with local Piper TTS support for Render voice playback.",
   "main": "src/index.js",
   "type": "commonjs",
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "test:intents": "node src/testIntents.js"
+    "test:intents": "node src/testIntents.js",
+    "download:piper-voice": "bash scripts/download-piper-voice.sh"
   },
   "dependencies": {
     "@discordjs/voice": "^0.17.0",
@@ -19,12 +20,13 @@
     "prism-media": "^1.3.5",
     "uuid": "^11.0.5",
     "wav": "^1.0.2",
-    "opusscript": "^0.1.1"
+    "@discordjs/opus": "^0.9.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.9"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "20.x",
+    "npm": ">=10.0.0"
   }
 }
