@@ -1,6 +1,6 @@
 require('dotenv').config();
 const { Client, GatewayIntentBits, Partials } = require('discord.js');
-const { connectToVoiceChannel, handleTranscript, speakATC } = require('./discord/voiceManager');
+const { connectToVoiceChannel, leaveVoiceChannel, handleTranscript, speakATC, speakRole } = require('./discord/voiceManager');
 const { getSession, resetSession, updateSession } = require('./atc/sessionStore');
 
 const token = process.env.DISCORD_TOKEN;
@@ -39,6 +39,23 @@ client.on('messageCreate', async (message) => {
       if (!channel) return message.reply('Join a voice channel first, then run `!sky join`.');
       connectToVoiceChannel(channel);
       return message.reply(`SkyEcho connected to ${channel.name}.`);
+    }
+
+    if (cmd === 'leave') {
+      leaveVoiceChannel(guildId);
+      return message.reply('SkyEcho disconnected from voice.');
+    }
+
+    if (cmd === 'voice-test') {
+      const role = (args.shift() || 'atc').toLowerCase();
+      const samples = {
+        atc: 'SkyEcho ATC radio check. Piper voice online.',
+        traffic: 'Caribbean two three four, climbing flight level three four zero.',
+        cabin: 'Ladies and gentlemen, welcome aboard SkyEcho Cabin.'
+      };
+      const text = args.join(' ') || samples[role] || samples.atc;
+      await speakRole(guildId, text, role);
+      return message.reply(`Voice test sent for role: ${role}`);
     }
 
     if (cmd === 'say') {
@@ -81,6 +98,8 @@ client.on('messageCreate', async (message) => {
     return message.reply([
       '**SkyEcho commands**',
       '`!sky join` - join your voice channel',
+      '`!sky leave` - disconnect from voice',
+      '`!sky voice-test atc|traffic|cabin` - test voice playback',
       '`!sky say <pilot phrase>` - test Vosk/transcript intent handling',
       '`!sky atc <line>` - speak a raw ATC line',
       '`!sky callsign <callsign>` - set aircraft callsign',
