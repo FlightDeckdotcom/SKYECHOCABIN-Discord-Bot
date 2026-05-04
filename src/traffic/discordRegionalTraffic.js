@@ -1,7 +1,7 @@
 // src/traffic/discordRegionalTraffic.js
 // SkyEcho Discord Regional AI Traffic
-// Discord/Xbox traffic that follows the active SkyEchoCabin session.
-// Browser app AI traffic stays separate. This file is for Discord/Xbox radio traffic.
+// Safer radio-queue version: one AI traffic exchange must finish
+// before another AI aircraft can call.
 
 const CARIBBEAN_AIRPORTS = new Set([
   'TKPK',
@@ -26,35 +26,67 @@ const CARIBBEAN_AIRPORTS = new Set([
   'MYNN'
 ]);
 
+const AIRPORT_NAMES = {
+  TKPK: 'Robert L. Bradshaw',
+  TAPA: 'V.C. Bird',
+  TJSJ: 'San Juan',
+  TNCM: 'Princess Juliana',
+  TFFR: 'Pointe-a-Pitre',
+  TFFF: 'Martinique',
+  TBPB: 'Grantley Adams',
+  TTPP: 'Piarco',
+  TIST: 'St. Thomas',
+  TISX: 'St. Croix',
+  TGPY: 'Maurice Bishop',
+  TVSA: 'Argyle',
+  TVSC: 'Canouan',
+  TVSM: 'Mustique',
+  TDPD: 'Douglas Charles',
+  MDPC: 'Punta Cana',
+  MDSD: 'Santo Domingo',
+  MKJP: 'Kingston',
+  MWCR: 'Owen Roberts',
+  MYNN: 'Nassau',
+  KMIA: 'Miami',
+  KMCO: 'Orlando',
+  KJFK: 'Kennedy',
+  KEWR: 'Newark',
+  KBOS: 'Boston',
+  KATL: 'Atlanta',
+  KCLT: 'Charlotte'
+};
+
 const REGION_PROFILES = {
   caribbean: {
     name: 'Caribbean / Eastern Caribbean',
     airlines: [
-      { call: 'LIAT', spoken: 'LIAT', weights: 12 },
-      { call: 'BWA', spoken: 'Caribbean', weights: 9 },
-      { call: 'IWY', spoken: 'InterCaribbean', weights: 8 },
-      { call: 'WIA', spoken: 'Winair', weights: 7 },
-      { call: 'SVG', spoken: 'SVG Air', weights: 6 },
-      { call: 'TJB', spoken: 'Tradewind', weights: 5 },
-      { call: 'JBU', spoken: 'JetBlue', weights: 4 },
-      { call: 'AAL', spoken: 'American', weights: 4 },
-      { call: 'DAL', spoken: 'Delta', weights: 2 },
-      { call: 'UAL', spoken: 'United', weights: 2 },
-      { call: 'N', spoken: 'November', weights: 3 }
+      { call: 'LIAT', spoken: 'Lee At', weight: 12 },
+      { call: 'BWA', spoken: 'Caribbean Airlines', weight: 9 },
+      { call: 'IWY', spoken: 'InterCaribbean', weight: 8 },
+      { call: 'WIA', spoken: 'Win Air', weight: 7 },
+      { call: 'SVG', spoken: 'SVG Air', weight: 6 },
+      { call: 'TJB', spoken: 'Tradewind', weight: 5 },
+      { call: 'JBU', spoken: 'JetBlue', weight: 4 },
+      { call: 'AAL', spoken: 'American', weight: 3 },
+      { call: 'DAL', spoken: 'Delta', weight: 2 },
+      { call: 'UAL', spoken: 'United', weight: 2 },
+      { call: 'N', spoken: 'November', weight: 4 }
     ],
-    fixes: ['GABAR', 'ANU', 'DANDE', 'VEDAS', 'SJU', 'UDGEL', 'POPOS', 'BQN', 'STT']
+    fixes: ['ANU', 'SKB', 'GABAR', 'DANDE', 'VEDAS', 'SJU', 'UDGEL', 'POPOS', 'BQN', 'STT'],
+    airports: ['TKPK', 'TAPA', 'TJSJ', 'TFFR', 'TFFF', 'TBPB', 'TTPP', 'TNCM', 'TIST', 'TISX', 'TGPY', 'TVSA', 'TDPD', 'MDPC', 'MDSD', 'MKJP']
   },
 
   default: {
     name: 'Generic IFR',
     airlines: [
-      { call: 'AAL', spoken: 'American', weights: 4 },
-      { call: 'DAL', spoken: 'Delta', weights: 4 },
-      { call: 'UAL', spoken: 'United', weights: 4 },
-      { call: 'JBU', spoken: 'JetBlue', weights: 4 },
-      { call: 'N', spoken: 'November', weights: 3 }
+      { call: 'AAL', spoken: 'American', weight: 4 },
+      { call: 'DAL', spoken: 'Delta', weight: 4 },
+      { call: 'UAL', spoken: 'United', weight: 4 },
+      { call: 'JBU', spoken: 'JetBlue', weight: 4 },
+      { call: 'N', spoken: 'November', weight: 3 }
     ],
-    fixes: ['DCT', 'VOR', 'WPT']
+    fixes: ['DCT', 'VOR', 'WPT'],
+    airports: ['KMIA', 'KMCO', 'KJFK', 'KEWR', 'KBOS', 'KATL', 'KCLT']
   }
 };
 
@@ -77,8 +109,7 @@ export function startDiscordTrafficLoop({
   guildId,
   sessionId,
   speakToGuild,
-  getSession,
-  isRadioBusy
+  getSession
 }) {
   if (!guildId || !sessionId || typeof speakToGuild !== 'function' || typeof getSession !== 'function') {
     console.warn('[DiscordTraffic] Cannot start loop. Missing guildId/sessionId/speakToGuild/getSession.');
@@ -117,17 +148,21 @@ export function startDiscordTrafficLoop({
     sessionId,
     speakToGuild,
     getSession,
-    isRadioBusy,
     timer: null,
     busy: false,
     stopped: false,
     startedAt: Date.now(),
-    count: 0
+    count: 0,
+    lastUserActivityAt: 0,
+    lastTrafficAt: 0,
+    minUserQuietMs: Number(process.env.DISCORD_TRAFFIC_USER_QUIET_MS || 8500),
+    minRadioGapMs: Number(process.env.DISCORD_TRAFFIC_RADIO_GAP_MS || 3500),
+    pendingExchange: null
   };
 
   activeLoops.set(guildId, state);
 
-  const firstDelay = randomInt(12000, 28000);
+  const firstDelay = randomInt(14000, 26000);
   state.timer = setTimeout(() => runTrafficTick(guildId), firstDelay);
 
   console.log(`[DiscordTraffic] First automatic traffic in ${Math.round(firstDelay / 1000)} seconds`);
@@ -168,7 +203,8 @@ export function getDiscordTrafficLoopStatus(guildId) {
     sessionId: state.sessionId,
     busy: state.busy,
     startedAt: state.startedAt,
-    count: state.count
+    count: state.count,
+    pendingExchange: Boolean(state.pendingExchange)
   };
 }
 
@@ -192,60 +228,81 @@ async function runTrafficTick(guildId) {
       return;
     }
 
-    if (
-      state.busy ||
-      (typeof state.isRadioBusy === 'function' && state.isRadioBusy(guildId, 'traffic'))
-    ) {
+    if (state.busy || state.pendingExchange) {
       console.log('[DiscordTraffic] Frequency busy, delaying traffic transmission.');
-      state.timer = setTimeout(() => runTrafficTick(guildId), randomInt(4500, 9000));
+      scheduleNextTrafficTick(state, session, randomInt(7000, 13000));
+      return;
+    }
+
+    if (!radioIsQuietEnough(state)) {
+      console.log('[DiscordTraffic] User/ATC recently active. Holding AI traffic.');
+      scheduleNextTrafficTick(state, session, randomInt(6500, 12000));
       return;
     }
 
     state.busy = true;
 
     const tx = createRegionalTrafficTransmission(session);
+    state.pendingExchange = tx;
 
     console.log(`[DiscordTraffic] PILOT: ${tx.pilotText}`);
-    await state.speakToGuild(
-      guildId,
-      withTrafficTone(tx.pilotText, tx.emotion, 'pilot'),
-      'traffic'
-    );
 
-    await wait(randomInt(450, 850));
+    const pilotResult = await state.speakToGuild(guildId, tx.pilotText, 'traffic');
 
-    if (typeof state.isRadioBusy === 'function' && state.isRadioBusy(guildId, 'traffic')) {
-      console.log('[DiscordTraffic] User/ATC became busy before traffic ATC reply. Delaying ATC reply.');
+    if (!pilotResult?.ok) {
+      console.warn('[DiscordTraffic] Pilot traffic audio failed or bot not joined. Ending exchange.');
       state.busy = false;
-      state.timer = setTimeout(() => runTrafficTick(guildId), randomInt(4000, 8000));
+      state.pendingExchange = null;
+      scheduleNextTrafficTick(state, session);
       return;
     }
 
+    await wait(randomInt(900, 1600));
+
+    if (!radioIsQuietEnough(state, 1200)) {
+      console.log('[DiscordTraffic] User/ATC became busy before traffic ATC reply. Holding same ATC reply, not starting a new pilot.');
+      await wait(randomInt(2500, 4500));
+    }
+
     console.log(`[DiscordTraffic] ATC: ${tx.atcText}`);
-    await state.speakToGuild(
-      guildId,
-      withTrafficTone(tx.atcText, tx.emotion, 'atc'),
-      'atc'
-    );
+
+    const atcResult = await state.speakToGuild(guildId, tx.atcText, 'atc');
+
+    if (!atcResult?.ok) {
+      console.warn('[DiscordTraffic] ATC traffic audio failed.');
+    }
 
     state.count += 1;
+    state.lastTrafficAt = Date.now();
     state.busy = false;
+    state.pendingExchange = null;
 
     scheduleNextTrafficTick(state, session);
   } catch (err) {
     console.warn('[DiscordTraffic] Tick failed:', err?.stack || err?.message || err);
 
     state.busy = false;
+    state.pendingExchange = null;
 
     const session = state.getSession(state.sessionId);
-    scheduleNextTrafficTick(state, session || {});
+    scheduleNextTrafficTick(state, session || {}, randomInt(12000, 22000));
   }
 }
 
-function scheduleNextTrafficTick(state, session) {
+function radioIsQuietEnough(state, overrideQuietMs = null) {
+  const now = Date.now();
+  const quietMs = overrideQuietMs ?? state.minUserQuietMs;
+  const radioGap = state.minRadioGapMs;
+
+  if (now - state.lastTrafficAt < radioGap) return false;
+
+  return true;
+}
+
+function scheduleNextTrafficTick(state, session, forcedDelay = null) {
   if (!state || state.stopped) return;
 
-  const delay = getTrafficLoopIntervalMs(session);
+  const delay = forcedDelay ?? getTrafficLoopIntervalMs(session);
 
   state.timer = setTimeout(() => runTrafficTick(state.guildId), delay);
 
@@ -256,10 +313,10 @@ export function createRegionalTrafficTransmission(session = {}) {
   const region = detectRegion(session);
   const profile = REGION_PROFILES[region] || REGION_PROFILES.default;
 
-  const callsign = createRegionalCallsign(profile);
   const runway = normalizeRunway(
     session?.assigned?.runway ||
     session?.runway ||
+    session?.depRunway ||
     guessRunway(session) ||
     '07'
   );
@@ -273,19 +330,30 @@ export function createRegionalTrafficTransmission(session = {}) {
     'preflight'
   );
 
-  const departure = String(
+  const userDeparture = String(
     session?.departure ||
     session?.origin ||
     firstIcao(session?.route) ||
-    'TKPK'
+    'TAPA'
   ).toUpperCase();
 
-  const arrival = String(
+  const userArrival = String(
     session?.arrival ||
     session?.destination ||
     lastIcao(session?.route) ||
-    'TJSJ'
+    'TKPK'
   ).toUpperCase();
+
+  const callsign = createRegionalCallsign(profile);
+
+  const trafficPlan = createTrafficPlan({
+    profile,
+    region,
+    userDeparture,
+    userArrival,
+    callsign,
+    phase
+  });
 
   const fix = pick(profile.fixes);
   const altitude = pickAltitudeForPhase(phase, session);
@@ -297,10 +365,12 @@ export function createRegionalTrafficTransmission(session = {}) {
     runway,
     controller,
     phase,
-    departure,
-    arrival,
+    departure: trafficPlan.departure,
+    arrival: trafficPlan.arrival,
     fix,
-    altitude
+    altitude,
+    flightRules: trafficPlan.flightRules,
+    aircraftType: trafficPlan.aircraftType
   });
 
   return {
@@ -309,13 +379,13 @@ export function createRegionalTrafficTransmission(session = {}) {
     regionName: profile.name,
     controller,
     callsign: callsign.spokenFull,
-    pilotText: exchange.pilotText,
-    atcText: exchange.atcText,
+    pilotText: cleanTrafficPhrase(exchange.pilotText),
+    atcText: cleanTrafficPhrase(exchange.atcText),
     scenario,
     phase,
     runway,
-    departure,
-    arrival,
+    departure: trafficPlan.departure,
+    arrival: trafficPlan.arrival,
     fix,
     altitude,
     emotion: exchange.emotion,
@@ -323,27 +393,44 @@ export function createRegionalTrafficTransmission(session = {}) {
   };
 }
 
-export function getTrafficLoopIntervalMs(session = {}) {
-  const densityRaw = session?.trafficDensity ?? process.env.TRAFFIC_DENSITY_DEFAULT ?? 2;
-  const density = normalizeDensity(densityRaw);
+function createTrafficPlan({
+  profile,
+  region,
+  userDeparture,
+  userArrival,
+  callsign,
+  phase
+}) {
+  const airports = profile.airports || REGION_PROFILES.default.airports;
 
-  if (density >= 4) return randomInt(22000, 42000);
-  if (density >= 3) return randomInt(35000, 65000);
-  if (density >= 2) return randomInt(55000, 95000);
-  return randomInt(90000, 160000);
-}
+  let departure = userDeparture;
+  let arrival = userArrival;
 
-export function shouldRunDiscordTraffic(session = {}) {
-  const env = String(process.env.DISCORD_TRAFFIC_AUTO || 'true').toLowerCase();
+  const isGroundLike = /preflight|clearance|ground|taxi|ramp/.test(phase);
+  const isLocalVfrCandidate = callsign.airline === 'N';
 
-  if (env === 'false' || env === 'off' || env === '0') return false;
+  if (isGroundLike) {
+    departure = userDeparture;
+  } else if (/approach|arrival|descent|landing|final/.test(phase)) {
+    arrival = userArrival;
+    departure = pickDifferentAirport(airports, arrival);
+  } else {
+    departure = pickDifferentAirport(airports, userArrival);
+    arrival = pickDifferentAirport(airports, departure);
+  }
 
-  const densityRaw = session?.trafficDensity ?? process.env.TRAFFIC_DENSITY_DEFAULT ?? 2;
-  const density = normalizeDensity(densityRaw);
+  if (isLocalVfrCandidate) {
+    arrival = departure;
+  }
 
-  if (density <= 0) return false;
+  const flightRules = isLocalVfrCandidate ? 'VFR' : 'IFR';
 
-  return true;
+  return {
+    departure,
+    arrival,
+    flightRules,
+    aircraftType: isLocalVfrCandidate ? pick(['Cessna 172', 'Piper Archer', 'Cessna 208']) : 'airliner'
+  };
 }
 
 function buildExchange(ctx) {
@@ -355,17 +442,34 @@ function buildExchange(ctx) {
     departure,
     arrival,
     fix,
-    altitude
+    altitude,
+    flightRules,
+    aircraftType
   } = ctx;
 
   const freq = controller.frequency || '118.70';
+  const destName = speakAirport(arrival);
+  const depName = speakAirport(departure);
+
+  const isVfr = flightRules === 'VFR';
+
+  if (isVfr) {
+    return buildVfrExchange({
+      scenario,
+      callsign,
+      runway,
+      departure,
+      depName,
+      aircraftType
+    });
+  }
 
   const variants = {
     clearance: [
       {
         emotion: 'calm-clearance',
-        pilotText: `${callsign.spokenFull}, request IFR clearance to ${speakIcao(arrival)}.`,
-        atcText: `${callsign.spokenFull}, cleared to ${speakIcao(arrival)} as filed. Maintain ${altitude}. Departure frequency ${speakFrequency(freq)}, squawk ${randomSquawkSpoken()}.`
+        pilotText: `${callsign.spokenFull}, request IFR clearance to ${destName}.`,
+        atcText: `${callsign.spokenFull}, cleared to ${destName} as filed. Maintain ${altitude}. Departure frequency ${speakFrequency(freq)}, squawk ${randomSquawkSpoken()}.`
       }
     ],
 
@@ -378,7 +482,7 @@ function buildExchange(ctx) {
       {
         emotion: 'ground-efficient',
         pilotText: `${callsign.spokenFull}, at the ramp, request taxi.`,
-        atcText: `${callsign.spokenFull}, taxi runway ${speakRunway(runway)} via Alpha. Give way to company traffic crossing left to right.`
+        atcText: `${callsign.spokenFull}, taxi runway ${speakRunway(runway)} via Alpha. Give way to traffic crossing left to right.`
       }
     ],
 
@@ -403,7 +507,7 @@ function buildExchange(ctx) {
       },
       {
         emotion: 'departure-vector',
-        pilotText: `${callsign.spokenFull}, airborne off ${speakIcao(departure)}, climbing through one thousand eight hundred.`,
+        pilotText: `${callsign.spokenFull}, airborne off ${depName}, climbing through one thousand eight hundred.`,
         atcText: `${callsign.spokenFull}, radar contact. Turn right heading zero niner zero, climb and maintain ${altitude}.`
       }
     ],
@@ -429,7 +533,7 @@ function buildExchange(ctx) {
       },
       {
         emotion: 'approach-sequencing',
-        pilotText: `${callsign.spokenFull}, inbound ${speakFix(fix)} for ${speakIcao(arrival)}.`,
+        pilotText: `${callsign.spokenFull}, inbound ${speakFix(fix)} for ${destName}.`,
         atcText: `${callsign.spokenFull}, roger. Reduce speed two one zero knots. You are number two following traffic ahead.`
       }
     ],
@@ -446,11 +550,69 @@ function buildExchange(ctx) {
   return pick(variants[scenario] || variants.enroute);
 }
 
+function buildVfrExchange({
+  scenario,
+  callsign,
+  runway,
+  depName,
+  aircraftType
+}) {
+  const aircraftSpoken = speakAircraftType(aircraftType);
+
+  const groundRequest = {
+    emotion: 'vfr-ground',
+    pilotText: `${callsign.spokenFull}, request taxi for V F R departure from ${depName}, ${aircraftSpoken}, at or below two thousand five hundred, request flight following.`,
+    atcText: `${callsign.spokenFull}, taxi to runway ${speakRunway(runway)} via Alpha, hold short runway ${speakRunway(runway)}.`
+  };
+
+  const towerRequest = {
+    emotion: 'vfr-tower',
+    pilotText: `${callsign.spokenFull}, holding short runway ${speakRunway(runway)}, ready for V F R departure.`,
+    atcText: `${callsign.spokenFull}, runway ${speakRunway(runway)}, cleared for takeoff. Maintain V F R at or below two thousand five hundred.`
+  };
+
+  const airborne = {
+    emotion: 'vfr-departure',
+    pilotText: `${callsign.spokenFull}, off runway ${speakRunway(runway)}, climbing V F R.`,
+    atcText: `${callsign.spokenFull}, radar contact. Maintain V F R. Traffic advisories available on this frequency.`
+  };
+
+  if (/departure|takeoff|tower/.test(scenario)) return towerRequest;
+  if (/airborne|enroute/.test(scenario)) return airborne;
+
+  return groundRequest;
+}
+
+export function getTrafficLoopIntervalMs(session = {}) {
+  const densityRaw = session?.trafficDensity ?? process.env.TRAFFIC_DENSITY_DEFAULT ?? 2;
+  const density = normalizeDensity(densityRaw);
+
+  if (density >= 6) return randomInt(26000, 47000);
+  if (density >= 5) return randomInt(32000, 55000);
+  if (density >= 4) return randomInt(42000, 70000);
+  if (density >= 3) return randomInt(55000, 90000);
+  if (density >= 2) return randomInt(80000, 130000);
+  return randomInt(120000, 190000);
+}
+
+export function shouldRunDiscordTraffic(session = {}) {
+  const env = String(process.env.DISCORD_TRAFFIC_AUTO || 'true').toLowerCase();
+
+  if (env === 'false' || env === 'off' || env === '0') return false;
+
+  const densityRaw = session?.trafficDensity ?? process.env.TRAFFIC_DENSITY_DEFAULT ?? 2;
+  const density = normalizeDensity(densityRaw);
+
+  if (density <= 0) return false;
+
+  return true;
+}
+
 function pickScenario(phase) {
   if (/preflight|clearance|ground|prep/.test(phase)) {
     return weightedPick([
       ['clearance', 2],
-      ['taxi', 4],
+      ['taxi', 5],
       ['departure', 1]
     ]);
   }
@@ -458,14 +620,13 @@ function pickScenario(phase) {
   if (/taxi|push|ramp/.test(phase)) {
     return weightedPick([
       ['taxi', 5],
-      ['departure', 3],
-      ['clearance', 1]
+      ['departure', 3]
     ]);
   }
 
   if (/takeoff|departure|climb|airborne/.test(phase)) {
     return weightedPick([
-      ['departure', 3],
+      ['departure', 2],
       ['airborne', 5],
       ['enroute', 1]
     ]);
@@ -474,7 +635,7 @@ function pickScenario(phase) {
   if (/cruise|enroute|center/.test(phase)) {
     return weightedPick([
       ['enroute', 6],
-      ['approach', 2],
+      ['approach', 1],
       ['airborne', 1]
     ]);
   }
@@ -490,7 +651,8 @@ function pickScenario(phase) {
   if (/landing|final|tower/.test(phase)) {
     return weightedPick([
       ['landing', 5],
-      ['approach', 2]
+      ['approach', 2],
+      ['departure', 2]
     ]);
   }
 
@@ -557,15 +719,15 @@ function detectRegion(session) {
 }
 
 function createRegionalCallsign(profile) {
-  const airline = weightedPick(profile.airlines.map(a => [a, a.weights || 1]));
+  const airline = weightedPick(profile.airlines.map(a => [a, a.weight || a.weights || 1]));
 
   if (airline.call === 'N') {
-    const n = `${randomInt(100, 999)}${pick(['A', 'B', 'C', 'K', 'M', 'P'])}`;
+    const n = `${randomInt(1000, 9999)}`;
 
     return {
       airline: airline.call,
       number: n,
-      spokenFull: `${airline.spoken} ${speakAlnum(n)}`
+      spokenFull: `${airline.spoken} ${speakDigits(n)}`
     };
   }
 
@@ -600,15 +762,12 @@ function pickAltitudeForPhase(phase, session) {
   return pick(['flight level one six zero', 'flight level two one zero', 'one six thousand']);
 }
 
-function withTrafficTone(text, emotion, role) {
-  return String(text || '').trim();
-}
-
 function guessRunway(session) {
   const s = JSON.stringify(session || {}).toUpperCase();
 
   if (s.includes('RWY 10') || s.includes('RUNWAY 10')) return '10';
   if (s.includes('RWY 07') || s.includes('RUNWAY 07')) return '07';
+  if (s.includes('RWY 17R') || s.includes('RUNWAY 17R')) return '17R';
 
   return '07';
 }
@@ -636,6 +795,22 @@ function firstIcao(route = '') {
 function lastIcao(route = '') {
   const all = String(route).toUpperCase().match(/\b[A-Z]{4}\b/g) || [];
   return all[all.length - 1] || null;
+}
+
+function speakAirport(icao = '') {
+  const ident = String(icao || '').toUpperCase().trim();
+
+  return AIRPORT_NAMES[ident] || speakIcao(ident);
+}
+
+function speakAircraftType(type = '') {
+  const raw = String(type || '').toUpperCase();
+
+  if (raw.includes('172')) return 'Cessna one seventy two';
+  if (raw.includes('208')) return 'Cessna two zero eight';
+  if (raw.includes('ARCHER')) return 'Piper Archer';
+
+  return String(type || 'aircraft');
 }
 
 function speakAltitude(alt) {
@@ -726,49 +901,24 @@ function speakDigits(value) {
     .join(' ');
 }
 
-function speakAlnum(value) {
-  const NATO = {
-    A: 'Alpha',
-    B: 'Bravo',
-    C: 'Charlie',
-    D: 'Delta',
-    E: 'Echo',
-    F: 'Foxtrot',
-    G: 'Golf',
-    H: 'Hotel',
-    I: 'India',
-    J: 'Juliet',
-    K: 'Kilo',
-    L: 'Lima',
-    M: 'Mike',
-    N: 'November',
-    O: 'Oscar',
-    P: 'Papa',
-    Q: 'Quebec',
-    R: 'Romeo',
-    S: 'Sierra',
-    T: 'Tango',
-    U: 'Uniform',
-    V: 'Victor',
-    W: 'Whiskey',
-    X: 'X-ray',
-    Y: 'Yankee',
-    Z: 'Zulu'
-  };
-
-  return String(value)
-    .toUpperCase()
-    .split('')
-    .map(ch => (/\d/.test(ch) ? DIGITS[Number(ch)] : NATO[ch] || ch))
-    .join(' ');
-}
-
 function speakFrequency(freq = '') {
-  return String(freq).replace('.', ' decimal ');
+  return String(freq)
+    .replace('.', ' decimal ')
+    .replace(/\b9\b/g, 'niner');
 }
 
 function randomSquawkSpoken() {
-  return speakDigits(String(randomInt(1000, 7777)));
+  return speakDigits(String(randomSquawk()));
+}
+
+function randomSquawk() {
+  let code = '';
+
+  while (code.length < 4) {
+    code += String(randomInt(0, 7));
+  }
+
+  return code;
 }
 
 function normalizeDensity(value) {
@@ -785,6 +935,31 @@ function normalizeDensity(value) {
   if (Number.isFinite(n)) return n;
 
   return 2;
+}
+
+function cleanTrafficPhrase(text = '') {
+  let out = String(text || '').trim();
+
+  out = out.replace(/\bVictor Foxtrot Romeo\b/gi, 'V F R');
+  out = out.replace(/\bIFR\b/g, 'IFR');
+  out = out.replace(/\bVFR\b/g, 'V F R');
+
+  out = out.replace(/,\s*([A-Za-z ]+\d{2,4})\.\s*,\s*\1\./gi, ', $1.');
+  out = out.replace(/,\s*([A-Za-z ]+\d{2,4})\s*,\s*\1\b/gi, ', $1');
+
+  out = out.replace(/\s+/g, ' ');
+  out = out.replace(/\s+\./g, '.');
+  out = out.replace(/,\s*,/g, ',');
+
+  return out.trim();
+}
+
+function pickDifferentAirport(list, notThis) {
+  const clean = (list || []).filter(x => x && x !== notThis);
+
+  if (!clean.length) return notThis || 'TAPA';
+
+  return pick(clean);
 }
 
 function wait(ms) {
